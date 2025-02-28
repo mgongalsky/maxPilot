@@ -39,8 +39,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
         mainPanel.add(scrollPane, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        // Обработка нажатия кнопки "Отправить"
-        sendButton.addActionListener {
+        // Функция отправки сообщения, общая для кнопки и для поля ввода
+        fun sendMessage() {
             val userMessage = inputField.text.trim()
             // Захардкодим API-ключ и модель
             val apiKey = "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"
@@ -59,6 +59,11 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 )
             }
         }
+
+        // Обработка нажатия кнопки "Отправить"
+        sendButton.addActionListener { sendMessage() }
+        // Обработка нажатия клавиши Enter в поле ввода
+        inputField.addActionListener { sendMessage() }
 
         // Создаем контент для ToolWindow и регистрируем его
         val contentFactory = ContentFactory.getInstance()
