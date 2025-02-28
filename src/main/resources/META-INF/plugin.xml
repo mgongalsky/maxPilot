@@ -25,6 +25,11 @@
     <!-- Extension points defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-
+        <toolWindow id="ChatWindow"
+                    anchor="right"
+                    factoryClass="com.example.plugin.ChatToolWindowFactory"
+                    secondary="true"
+                    icon="/icons/chatIcon.svg"/>
     </extensions>
+
 </idea-plugin>
