@@ -9,7 +9,6 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.awt.BorderLayout
-import java.awt.FlowLayout
 import javax.swing.*
 
 class ChatToolWindowFactory : ToolWindowFactory {
@@ -19,19 +18,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         // Основная панель с BorderLayout
         val mainPanel = JPanel(BorderLayout())
-
-        // Верхняя панель для ввода API-ключа и выбора модели
-        val topPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        val apiKeyField = JTextField(25).apply {
-            toolTipText = "Введите ваш OpenAI API Key"
-        }
-        val modelSelector = JComboBox(arrayOf("gpt-3.5-turbo", "gpt-4")).apply {
-            selectedIndex = 0
-        }
-        topPanel.add(JLabel("API Key:"))
-        topPanel.add(apiKeyField)
-        topPanel.add(JLabel("Model:"))
-        topPanel.add(modelSelector)
 
         // Область для отображения истории чата с прокруткой
         val chatArea = JTextArea().apply {
@@ -46,17 +32,17 @@ class ChatToolWindowFactory : ToolWindowFactory {
         inputPanel.add(inputField, BorderLayout.CENTER)
         inputPanel.add(sendButton, BorderLayout.EAST)
 
-        // Собираем основной интерфейс
-        mainPanel.add(topPanel, BorderLayout.NORTH)
+        // Собираем интерфейс: область чата и панель ввода внизу
         mainPanel.add(scrollPane, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
         // Обработка нажатия кнопки "Отправить"
         sendButton.addActionListener {
             val userMessage = inputField.text.trim()
-            val apiKey = apiKeyField.text.trim()
-            val selectedModel = modelSelector.selectedItem?.toString() ?: "gpt-3.5-turbo"
-            if (userMessage.isNotEmpty() && apiKey.isNotEmpty()) {
+            // Захардкодим API-ключ и модель
+            val apiKey = "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"
+            val selectedModel = "gpt-3.5-turbo"
+            if (userMessage.isNotEmpty()) {
                 chatArea.append("Вы: $userMessage\n")
                 val responseText = sendChatMessage(apiKey, selectedModel, userMessage)
                 chatArea.append("ChatGPT: $responseText\n\n")
@@ -64,7 +50,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
             } else {
                 JOptionPane.showMessageDialog(
                     mainPanel,
-                    "Пожалуйста, введите API-ключ и сообщение.",
+                    "Пожалуйста, введите сообщение.",
                     "Ошибка",
                     JOptionPane.ERROR_MESSAGE
                 )
@@ -78,7 +64,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
     }
 
     /**
-     * Отправка запроса к OpenAI ChatGPT API и возврат ответа.
+     * Отправляет запрос к OpenAI ChatGPT API и возвращает ответ в виде строки.
      */
     private fun sendChatMessage(apiKey: String, model: String, userMessage: String): String {
         return try {
