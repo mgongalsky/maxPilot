@@ -10,6 +10,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.awt.BorderLayout
 import javax.swing.*
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.psi.PsiManager
+import com.intellij.psi.PsiFileFactory
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.lang.Language
 
 class ChatToolWindowFactory : ToolWindowFactory {
 
@@ -19,10 +24,43 @@ class ChatToolWindowFactory : ToolWindowFactory {
         // Основная панель с BorderLayout
         val mainPanel = JPanel(BorderLayout())
 
+        // Кнопка для добавления функции helloWorld через PSI
+        val psiButton = JButton("Добавить функцию helloWorld")
+        psiButton.addActionListener {
+            WriteCommandAction.runWriteCommandAction(project) {
+                // Получаем корневой каталог проекта
+                val baseDir = project.baseDir
+                val psiManager = PsiManager.getInstance(project)
+                val psiDirectory = psiManager.findDirectory(baseDir) ?: return@runWriteCommandAction
+                // Находим объект языка Python
+                val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
+                // Пытаемся найти файл test.py
+                var psiFile = psiDirectory.findFile("test.py")
+                if (psiFile == null) {
+                    // Если файл не найден, создаем новый пустой файл
+                    psiFile = PsiFileFactory.getInstance(project)
+                        .createFileFromText("test.py", pythonLanguage, "")
+                    psiDirectory.add(psiFile)
+                    psiFile = psiDirectory.findFile("test.py")
+                }
+                // Если файл найден или успешно создан, добавляем в него функцию helloWorld
+                psiFile?.let {
+                    val document = PsiDocumentManager.getInstance(project).getDocument(it)
+                    if (document != null) {
+                        // Определение функции, которое будет добавлено в файл
+                        val functionText = "\ndef helloWorld():\n    print('Hello, World!')\n"
+                        document.insertString(document.textLength, functionText)
+                        PsiDocumentManager.getInstance(project).commitDocument(document)
+                    }
+                }
+            }
+        }
+        // Размещаем кнопку в верхней части панели
+        mainPanel.add(psiButton, BorderLayout.NORTH)
+
         // Область для отображения истории чата с прокруткой
         val chatArea = JTextArea().apply {
             isEditable = false
-            // Включаем перенос строк, чтобы текст не выходил за пределы видимости
             lineWrap = true
             wrapStyleWord = true
         }
@@ -42,7 +80,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
         // Функция отправки сообщения, общая для кнопки и для поля ввода
         fun sendMessage() {
             val userMessage = inputField.text.trim()
-            // Захардкодим API-ключ и модель
             val apiKey = "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"
             val selectedModel = "gpt-3.5-turbo"
             if (userMessage.isNotEmpty()) {
@@ -62,10 +99,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
 
         // Обработка нажатия кнопки "Отправить"
         sendButton.addActionListener { sendMessage() }
-        // Обработка нажатия клавиши Enter в поле ввода
         inputField.addActionListener { sendMessage() }
 
-        // Создаем контент для ToolWindow и регистрируем его
         val contentFactory = ContentFactory.getInstance()
         val content = contentFactory.createContent(mainPanel, "", false)
         toolWindow.contentManager.addContent(content)
@@ -79,7 +114,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
             val url = "https://api.openai.com/v1/chat/completions"
             val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
 
-            // Формирование JSON-тела запроса
             val jsonBody = JSONObject().apply {
                 put("model", model)
                 put("messages", listOf(
