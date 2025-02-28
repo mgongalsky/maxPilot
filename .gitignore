@@ -40,3 +40,6 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### OpenAI token ###
+src/main/resources/openai.properties
