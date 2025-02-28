@@ -15,6 +15,7 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.lang.Language
+import java.util.*
 
 class ChatToolWindowFactory : ToolWindowFactory {
 
@@ -28,26 +29,22 @@ class ChatToolWindowFactory : ToolWindowFactory {
         val psiButton = JButton("Добавить функцию helloWorld")
         psiButton.addActionListener {
             WriteCommandAction.runWriteCommandAction(project) {
-                // Получаем корневой каталог проекта
                 val baseDir = project.baseDir
                 val psiManager = PsiManager.getInstance(project)
                 val psiDirectory = psiManager.findDirectory(baseDir) ?: return@runWriteCommandAction
-                // Находим объект языка Python
                 val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
-                // Пытаемся найти файл test.py
+
                 var psiFile = psiDirectory.findFile("test.py")
                 if (psiFile == null) {
-                    // Если файл не найден, создаем новый пустой файл
                     psiFile = PsiFileFactory.getInstance(project)
                         .createFileFromText("test.py", pythonLanguage, "")
                     psiDirectory.add(psiFile)
                     psiFile = psiDirectory.findFile("test.py")
                 }
-                // Если файл найден или успешно создан, добавляем в него функцию helloWorld
+
                 psiFile?.let {
                     val document = PsiDocumentManager.getInstance(project).getDocument(it)
                     if (document != null) {
-                        // Определение функции, которое будет добавлено в файл
                         val functionText = "\ndef helloWorld():\n    print('Hello, World!')\n"
                         document.insertString(document.textLength, functionText)
                         PsiDocumentManager.getInstance(project).commitDocument(document)
@@ -55,7 +52,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 }
             }
         }
-        // Размещаем кнопку в верхней части панели
+        // Размещаем кнопку PSI в верхней части панели
         mainPanel.add(psiButton, BorderLayout.NORTH)
 
         // Область для отображения истории чата с прокруткой
@@ -77,10 +74,22 @@ class ChatToolWindowFactory : ToolWindowFactory {
         mainPanel.add(scrollPane, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        // Функция отправки сообщения, общая для кнопки и для поля ввода
+        // Функция отправки сообщения, общая для кнопки и поля ввода
         fun sendMessage() {
             val userMessage = inputField.text.trim()
-            val apiKey = "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"
+
+            // Загружаем API-ключ из ресурсов
+            val apiKey = loadOpenAiKeyFromResources()
+            if (apiKey.isNullOrEmpty()) {
+                JOptionPane.showMessageDialog(
+                    mainPanel,
+                    "Не удалось загрузить API-ключ из ресурсов (openai.properties).",
+                    "Ошибка",
+                    JOptionPane.ERROR_MESSAGE
+                )
+                return
+            }
+
             val selectedModel = "gpt-3.5-turbo"
             if (userMessage.isNotEmpty()) {
                 chatArea.append("Вы: $userMessage\n")
@@ -97,13 +106,25 @@ class ChatToolWindowFactory : ToolWindowFactory {
             }
         }
 
-        // Обработка нажатия кнопки "Отправить"
+        // Обработка нажатия кнопки "Отправить" и клавиши Enter
         sendButton.addActionListener { sendMessage() }
         inputField.addActionListener { sendMessage() }
 
         val contentFactory = ContentFactory.getInstance()
         val content = contentFactory.createContent(mainPanel, "", false)
         toolWindow.contentManager.addContent(content)
+    }
+
+    /**
+     * Загружает API-ключ OpenAI из файла openai.properties, находящегося в resources.
+     */
+    private fun loadOpenAiKeyFromResources(): String? {
+        val props = Properties()
+        // Пытаемся прочитать ресурс openai.properties из classpath
+        val inputStream = this::class.java.classLoader.getResourceAsStream("openai.properties")
+            ?: return null
+        props.load(inputStream)
+        return props.getProperty("api.key")
     }
 
     /**
