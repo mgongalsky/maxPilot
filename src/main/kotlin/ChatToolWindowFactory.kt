@@ -22,6 +22,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
         // Область для отображения истории чата с прокруткой
         val chatArea = JTextArea().apply {
             isEditable = false
+            // Включаем перенос строк, чтобы текст не выходил за пределы видимости
+            lineWrap = true
+            wrapStyleWord = true
         }
         val scrollPane = JScrollPane(chatArea)
 
