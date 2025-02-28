@@ -54,7 +54,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             val apiKey = props.getProperty("api.key")
-            val selectedModel = "gpt-3.5-turbo" // или другая модель по вашему выбору
+            val selectedModel = "o1-mini" // или другая модель по вашему выбору
             if (userMessage.isNotEmpty()) {
                 chatArea.append("Вы: $userMessage\n")
                 val responseText = sendChatMessage(apiKey, selectedModel, userMessage)
