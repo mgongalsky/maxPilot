@@ -2,6 +2,7 @@ plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "1.9.21"
     id("org.jetbrains.intellij") version "1.16.1"
+    kotlin("plugin.serialization") version "1.9.0" // Убедись, что версия совпадает с твоим Kotlin
 }
 
 group = "org.example"
@@ -14,6 +15,10 @@ repositories {
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.10.0")
     implementation("org.json:json:20230227")
+    implementation("com.aallam.openai:openai-client:3.2.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
+    implementation("com.github.victools:jsonschema-generator:4.30.0") // Альтернативная библиотека
+
 }
 
 intellij {
