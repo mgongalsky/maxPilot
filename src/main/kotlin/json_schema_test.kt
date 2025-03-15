@@ -3,7 +3,7 @@ import com.github.victools.jsonschema.generator.*
 import com.fasterxml.jackson.databind.ObjectMapper
 
 @Serializable
-data class CodeResponse(
+data class CodeResponse3(
     val file_name: String,
     val description: String,
     val code: String,
@@ -17,7 +17,7 @@ fun main() {
         .build()
 
     val generator = SchemaGenerator(config)
-    val schemaNode = generator.generateSchema(CodeResponse::class.java)
+    val schemaNode = generator.generateSchema(CodeResponse3::class.java)
 
     // Преобразуем JSON Schema в строку
     val jsonSchema = ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(schemaNode)

@@ -1,0 +1,2 @@
+class snake_test {
+}
