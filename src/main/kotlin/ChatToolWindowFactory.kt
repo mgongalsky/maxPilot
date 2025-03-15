@@ -45,6 +45,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             chatArea.append("Вы: $userMessage\n")
+            // Выводим сообщение, что идёт генерация кода
+            chatArea.append("Генерация кода идет...\n")
 
             // Загружаем настройки из файла openai.properties
             val props = loadOpenAiProperties()
@@ -53,7 +55,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             val apiKey = props.getProperty("api.key")
-            if (apiKey == null || apiKey.isEmpty()) {
+            if (apiKey.isNullOrEmpty()) {
                 JOptionPane.showMessageDialog(mainPanel, "Свойство api.key не найдено или пустое.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
@@ -64,11 +66,20 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 // Создаем экземпляр генератора и вызываем функцию для генерации ответа
                 val generator = OpenAiCodeGenerator(apiKey)
                 val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage)
-                // Выводим сгенерированный код в чат
-                chatArea.append("Сгенерированный код:\n${codeResponse.code}\n\n")
+                // Выводим сообщение для пользователя из CodeResponse.user_message вместо полного кода
+                chatArea.append("Сообщение: ${codeResponse.user_message}\n\n")
                 // Создаем или обновляем файл в проекте
                 createOrUpdateFile(project, codeResponse.file_name, codeResponse.code)
                 chatArea.append("Файл '${codeResponse.file_name}' успешно создан/обновлён.\n")
+                // Выводим список файлов в корневой директории проекта
+                val baseDir = project.baseDir
+                val psiManager = PsiManager.getInstance(project)
+                val psiDirectory = psiManager.findDirectory(baseDir)
+                if (psiDirectory != null) {
+                    val fileNames = psiDirectory.files.map { it.name }
+                    chatArea.append("Список файлов в проекте:\n")
+                    fileNames.forEach { chatArea.append("$it\n") }
+                }
             } catch (e: Exception) {
                 chatArea.append("Ошибка генерации: ${e.message}\n")
             }
@@ -79,7 +90,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
         generateButton.addActionListener { generateCode() }
         inputField.addActionListener { generateCode() }
 
-        // Создаем содержимое окна и добавляем его в toolWindow
         val contentFactory = ContentFactory.getInstance()
         val content = contentFactory.createContent(mainPanel, "", false)
         toolWindow.contentManager.addContent(content)
