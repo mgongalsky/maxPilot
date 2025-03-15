@@ -1,36 +1,25 @@
 package com.example.plugin
 
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.ui.content.ContentFactory
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.awt.BorderLayout
-import javax.swing.*
-import com.intellij.openapi.command.WriteCommandAction
-import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiFileFactory
+import com.intellij.psi.PsiManager
+import com.intellij.ui.content.ContentFactory
 import com.intellij.lang.Language
-import java.util.*
-import java.util.concurrent.TimeUnit
+import java.awt.BorderLayout
+import java.util.Properties
+import javax.swing.*
 
 class ChatToolWindowFactory : ToolWindowFactory {
 
-    // Создаем HTTP-клиент с увеличенным таймаутом
-    private val client = OkHttpClient.Builder()
-        .callTimeout(60, TimeUnit.SECONDS)
-        .build()
-
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        // Основная панель
+        // Основная панель с BorderLayout
         val mainPanel = JPanel(BorderLayout())
 
-        // Текстовая область для диалога с прокруткой
+        // Текстовая область для вывода истории диалога
         val chatArea = JTextArea().apply {
             isEditable = false
             lineWrap = true
@@ -38,101 +27,59 @@ class ChatToolWindowFactory : ToolWindowFactory {
         }
         val scrollPane = JScrollPane(chatArea)
 
-        // Панель ввода сообщения
+        // Панель ввода с текстовым полем и кнопкой "Сгенерировать"
         val inputPanel = JPanel(BorderLayout())
         val inputField = JTextField()
-        val sendButton = JButton("Отправить")
+        val generateButton = JButton("Сгенерировать")
         inputPanel.add(inputField, BorderLayout.CENTER)
-        inputPanel.add(sendButton, BorderLayout.EAST)
+        inputPanel.add(generateButton, BorderLayout.EAST)
 
         mainPanel.add(scrollPane, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        fun sendMessage() {
+        // Функция для обработки запроса и генерации кода
+        fun generateCode() {
             val userMessage = inputField.text.trim()
+            if (userMessage.isEmpty()) {
+                JOptionPane.showMessageDialog(mainPanel, "Пожалуйста, введите описание программы.", "Ошибка", JOptionPane.ERROR_MESSAGE)
+                return
+            }
+            chatArea.append("Вы: $userMessage\n")
+
+            // Загружаем настройки из файла openai.properties
             val props = loadOpenAiProperties()
             if (props == null) {
                 JOptionPane.showMessageDialog(mainPanel, "Не удалось загрузить openai.properties из ресурсов.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
             val apiKey = props.getProperty("api.key")
-            // В файле openai.properties укажите модель, поддерживающую Structured Outputs, например:
-            // model=gpt-4o-mini-2024-08-06
-            val selectedModel = props.getProperty("model") ?: "gpt-4o-mini-2024-08-06"
-            if (userMessage.isNotEmpty()) {
-                chatArea.append("Вы: $userMessage\n")
-
-                // Формируем JSON-схему для Structured Outputs
-                val schema = JSONObject().apply {
-                    put("type", "object")
-                    put("properties", JSONObject().apply {
-                        put("fileName", JSONObject().apply {
-                            put("type", "string")
-                            put("description", "Имя файла, который нужно создать")
-                        })
-                        put("code", JSONObject().apply {
-                            put("type", "string")
-                            put("description", "Содержимое файла с кодом")
-                        })
-                    })
-                    put("required", JSONArray().put("fileName").put("code"))
-                    put("additionalProperties", false)
-                }
-
-                // Параметры для Structured Outputs
-                val responseFormat = JSONObject().apply {
-                    put("type", "json_schema")
-                    put("json_schema", JSONObject().apply {
-                        put("strict", true)
-                        put("schema", schema)
-                    })
-                }
-
-                // Формируем тело запроса с параметром response_format
-                val jsonBody = JSONObject().apply {
-                    put("model", selectedModel)
-                    put("messages", JSONArray().put(
-                        JSONObject().apply {
-                            put("role", "user")
-                            put("content", userMessage)
-                        }
-                    ))
-                    put("response_format", responseFormat)
-                }.toString()
-
-                // Выводим запрос для отладки
-                chatArea.append("Полный запрос:\n$jsonBody\n\n")
-
-                // Отправляем запрос и получаем ответ
-                val responseText = sendChatMessage(apiKey, jsonBody)
-
-                // Выводим полный ответ сервера для отладки
-                chatArea.append("Полный ответ от сервера:\n$responseText\n\n")
-                inputField.text = ""
-
-                // Пытаемся обработать ответ как JSON со структурированными данными
-                try {
-                    val jsonResponse = JSONObject(responseText)
-                    if (!jsonResponse.has("fileName") || !jsonResponse.has("code")) {
-                        chatArea.append("Ошибка: ответ не соответствует ожидаемой структуре.\n")
-                        return
-                    }
-                    val fileName = jsonResponse.getString("fileName")
-                    val codeText = jsonResponse.getString("code")
-                    createOrUpdateFile(project, fileName, codeText)
-                    chatArea.append("Файл '$fileName' успешно создан/обновлён.\n")
-                } catch (e: Exception) {
-                    chatArea.append("Ошибка обработки ответа: ${e.message}\n")
-                    chatArea.append("Полный ответ для отладки:\n$responseText\n")
-                }
-            } else {
-                JOptionPane.showMessageDialog(mainPanel, "Пожалуйста, введите описание программы.", "Ошибка", JOptionPane.ERROR_MESSAGE)
+            if (apiKey == null || apiKey.isEmpty()) {
+                JOptionPane.showMessageDialog(mainPanel, "Свойство api.key не найдено или пустое.", "Ошибка", JOptionPane.ERROR_MESSAGE)
+                return
             }
+            // Модель можно указать в настройках, по умолчанию используем "gpt-4o-mini-2024-08-06"
+            val selectedModel = props.getProperty("model") ?: "gpt-4o-mini-2024-08-06"
+
+            try {
+                // Создаем экземпляр генератора и вызываем функцию для генерации ответа
+                val generator = OpenAiCodeGenerator(apiKey)
+                val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage)
+                // Выводим сгенерированный код в чат
+                chatArea.append("Сгенерированный код:\n${codeResponse.code}\n\n")
+                // Создаем или обновляем файл в проекте
+                createOrUpdateFile(project, codeResponse.file_name, codeResponse.code)
+                chatArea.append("Файл '${codeResponse.file_name}' успешно создан/обновлён.\n")
+            } catch (e: Exception) {
+                chatArea.append("Ошибка генерации: ${e.message}\n")
+            }
+            inputField.text = ""
         }
 
-        sendButton.addActionListener { sendMessage() }
-        inputField.addActionListener { sendMessage() }
+        // Добавляем обработчики событий для кнопки и текстового поля
+        generateButton.addActionListener { generateCode() }
+        inputField.addActionListener { generateCode() }
 
+        // Создаем содержимое окна и добавляем его в toolWindow
         val contentFactory = ContentFactory.getInstance()
         val content = contentFactory.createContent(mainPanel, "", false)
         toolWindow.contentManager.addContent(content)
@@ -143,36 +90,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
      */
     private fun loadOpenAiProperties(): Properties? {
         val props = Properties()
-        val inputStream = this::class.java.classLoader.getResourceAsStream("openai.properties")
-            ?: return null
+        val inputStream = this::class.java.classLoader.getResourceAsStream("openai.properties") ?: return null
         props.load(inputStream)
         return props
-    }
-
-    /**
-     * Отправляет запрос к OpenAI ChatGPT API и возвращает ответ в виде строки.
-     * jsonBody – готовое тело запроса в формате JSON, включая параметр response_format.
-     */
-    private fun sendChatMessage(apiKey: String, jsonBody: String): String {
-        return try {
-            val url = "https://api.openai.com/v1/chat/completions"
-            val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
-            val body = jsonBody.toRequestBody(mediaType)
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .post(body)
-                .build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return "Ошибка при запросе: ${response.code} ${response.message}"
-                }
-                response.body?.string() ?: "Пустой ответ от сервера"
-            }
-        } catch (e: Exception) {
-            "Ошибка: ${e.message}"
-        }
     }
 
     /**
