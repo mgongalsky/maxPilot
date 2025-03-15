@@ -3,6 +3,7 @@ package com.example.plugin
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.psi.PsiDocumentManager
@@ -11,6 +12,7 @@ import com.intellij.psi.PsiManager
 import com.intellij.ui.content.ContentFactory
 import com.intellij.lang.Language
 import java.awt.BorderLayout
+import java.awt.FlowLayout
 import java.util.Properties
 import javax.swing.*
 
@@ -20,13 +22,23 @@ class ChatToolWindowFactory : ToolWindowFactory {
         // Основная панель с BorderLayout
         val mainPanel = JPanel(BorderLayout())
 
-        // Текстовая область для вывода истории диалога
+        // Панель для истории диалога
         val chatArea = JTextArea().apply {
             isEditable = false
             lineWrap = true
             wrapStyleWord = true
         }
         val scrollPane = JScrollPane(chatArea)
+
+        // Панель для вывода списка созданных файлов с кнопками "Открыть"
+        val filesPanel = JPanel(FlowLayout(FlowLayout.LEFT))
+        filesPanel.border = BorderFactory.createTitledBorder("Созданные файлы")
+
+        // Объединяем чат и файлы в одну центральную панель
+        val centerPanel = JPanel()
+        centerPanel.layout = BoxLayout(centerPanel, BoxLayout.Y_AXIS)
+        centerPanel.add(scrollPane)
+        centerPanel.add(filesPanel)
 
         // Панель ввода с текстовым полем и кнопкой "Сгенерировать"
         val inputPanel = JPanel(BorderLayout())
@@ -35,8 +47,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
         inputPanel.add(inputField, BorderLayout.CENTER)
         inputPanel.add(generateButton, BorderLayout.EAST)
 
-        mainPanel.add(scrollPane, BorderLayout.CENTER)
+        mainPanel.add(centerPanel, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
+
+        // Функция для добавления сообщения в чат
+        fun appendToChat(message: String) {
+            chatArea.append(message + "\n")
+        }
 
         // Функция для получения контекста текущего открытого файла
         fun getCurrentFileContext(project: Project): String? {
@@ -47,6 +64,24 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return "File: $fileName\nContent:\n${document.text}"
         }
 
+        // Функция для обновления панели с файлами – добавляет кнопку "Открыть" для нового файла
+        fun addFileButton(project: Project, fileName: String) {
+            // Формируем путь к файлу (предполагаем, что файл находится в корневой директории проекта)
+            val filePath = "${project.baseDir.path}/$fileName"
+            val openButton = JButton("Открыть $fileName")
+            openButton.addActionListener {
+                val virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
+                if (virtualFile != null) {
+                    FileEditorManager.getInstance(project).openFile(virtualFile, true)
+                } else {
+                    JOptionPane.showMessageDialog(null, "Не удалось найти файл: $filePath", "Ошибка", JOptionPane.ERROR_MESSAGE)
+                }
+            }
+            filesPanel.add(openButton)
+            filesPanel.revalidate()
+            filesPanel.repaint()
+        }
+
         // Функция для обработки запроса и генерации кода
         fun generateCode() {
             val userMessage = inputField.text.trim()
@@ -54,14 +89,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 JOptionPane.showMessageDialog(mainPanel, "Пожалуйста, введите описание программы.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
-            chatArea.append("Вы: $userMessage\n")
-            // Сообщаем, что начинается генерация кода
-            chatArea.append("Генерация кода идет...\n")
+            appendToChat("Вы: $userMessage")
+            appendToChat("Генерация кода идет...")
 
             // Получаем контекст текущего открытого файла, если есть
             val context = getCurrentFileContext(project)
             if (context != null) {
-                chatArea.append("Учитывается контекст текущего файла:\n")
+                appendToChat("Контекст текущего файла загружен.")
             }
 
             // Загружаем настройки из файла openai.properties
@@ -75,37 +109,26 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 JOptionPane.showMessageDialog(mainPanel, "Свойство api.key не найдено или пустое.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
-            // Модель можно указать в настройках, по умолчанию используем "gpt-4o-mini-2024-08-06"
             val selectedModel = props.getProperty("model") ?: "gpt-4o-mini-2024-08-06"
 
             try {
-                // Создаем экземпляр генератора и вызываем функцию для генерации ответа,
-                // передавая текст запроса и контекст (если он есть)
                 val generator = OpenAiCodeGenerator(apiKey)
+                // Передаем контекст, если он есть
                 val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage, context)
-                // Выводим сообщение для пользователя из codeResponse.user_message
-                chatArea.append("Сообщение: ${codeResponse.user_message}\n\n")
+                appendToChat("Сообщение: ${codeResponse.user_message}")
+
                 // Создаем или обновляем файл в проекте
                 createOrUpdateFile(project, codeResponse.file_name, codeResponse.code)
-                chatArea.append("Файл '${codeResponse.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}\n")
-                // Выводим список файлов в корневой директории проекта
-                /*val baseDir = project.baseDir
-                val psiManager = PsiManager.getInstance(project)
-                val psiDirectory = psiManager.findDirectory(baseDir)
-                if (psiDirectory != null) {
-                    val fileNames = psiDirectory.files.map { it.name }
-                    chatArea.append("Список файлов в проекте:\n")
-                    fileNames.forEach { chatArea.append("$it\n") }
-                }
+                appendToChat("Файл '${codeResponse.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}")
 
-                 */
+                // Добавляем кнопку для открытия файла
+                addFileButton(project, codeResponse.file_name)
             } catch (e: Exception) {
-                chatArea.append("Ошибка генерации: ${e.message}\n")
+                appendToChat("Ошибка генерации: ${e.message}")
             }
             inputField.text = ""
         }
 
-        // Добавляем обработчики событий для кнопки и текстового поля
         generateButton.addActionListener { generateCode() }
         inputField.addActionListener { generateCode() }
 
