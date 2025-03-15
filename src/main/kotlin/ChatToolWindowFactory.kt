@@ -20,7 +20,7 @@ import javax.swing.*
 class ChatToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        // Панель для вывода диалога (JTextArea) и панели для списка файлов
+        // Панель для истории диалога (JTextArea) и панель для списка файлов
         val chatArea = JTextArea().apply {
             isEditable = false
             lineWrap = true
@@ -29,21 +29,29 @@ class ChatToolWindowFactory : ToolWindowFactory {
         val scrollPane = JScrollPane(chatArea)
 
         // Панель для вывода списка созданных файлов с кнопками "Открыть"
-        val filesPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        filesPanel.border = BorderFactory.createTitledBorder("Созданные файлы")
+        val filesPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            border = BorderFactory.createTitledBorder("Созданные файлы")
+        }
 
-        // Объединяем чат и панель файлов в центральную панель
+        // Объединяем чат и панель файлов в одну центральную панель
         val centerPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(scrollPane)
             add(filesPanel)
         }
 
-        // Панель ввода с текстовым полем и кнопкой "Сгенерировать"
+        // Используем JTextArea для ввода с поддержкой переноса строк вместо JTextField
+        val inputField = JTextArea().apply {
+            lineWrap = true
+            wrapStyleWord = true
+            rows = 3 // количество строк по умолчанию
+        }
+        val inputScrollPane = JScrollPane(inputField)
+
+        // Панель ввода с нашим inputScrollPane и кнопкой "Сгенерировать"
         val inputPanel = JPanel(BorderLayout())
-        val inputField = JTextField()
         val generateButton = JButton("Сгенерировать")
-        inputPanel.add(inputField, BorderLayout.CENTER)
+        inputPanel.add(inputScrollPane, BorderLayout.CENTER)
         inputPanel.add(generateButton, BorderLayout.EAST)
 
         // Основная панель
@@ -51,7 +59,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
         mainPanel.add(centerPanel, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        // Функция для добавления сообщения в чат (простой append для JTextArea)
+        // Функция для добавления сообщения в чат
         fun appendToChat(message: String) {
             chatArea.append(message + "\n")
         }
@@ -65,7 +73,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return "File: $fileName\nContent:\n${document.text}"
         }
 
-        // Функция для обновления панели файлов – добавляет кнопку "Открыть" для нового файла
+        // Функция для обновления панели с файлами – добавляет кнопку "Открыть" для нового файла
         fun addFileButton(project: Project, fileName: String) {
             val filePath = "${project.baseDir.path}/$fileName"
             val openButton = JButton("Открыть $fileName")
@@ -113,9 +121,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
 
             try {
                 val generator = OpenAiCodeGenerator(apiKey)
-                // Передаем контекст, если есть
+                // Передаем контекст, если он есть
                 val multiResponse = generator.generateCodeResponse(userMessage, context)
-                // Для каждого изменения (файла) выводим информацию в чат и добавляем кнопку "Открыть"
+                // Для каждого изменения (файла) выводим информацию и добавляем кнопку "Открыть"
                 multiResponse.files.forEach { fileChange ->
                     appendToChat("Сообщение: ${fileChange.user_message}")
                     createOrUpdateFile(project, fileChange.file_name, fileChange.code)
@@ -129,7 +137,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
         }
 
         generateButton.addActionListener { generateCode() }
-        inputField.addActionListener { generateCode() }
+        inputField.addKeyListener(object : java.awt.event.KeyAdapter() {
+            override fun keyReleased(e: java.awt.event.KeyEvent?) {
+                if (e?.keyCode == java.awt.event.KeyEvent.VK_ENTER) {
+                    generateCode()
+                }
+            }
+        })
 
         val contentFactory = ContentFactory.getInstance()
         val content = contentFactory.createContent(mainPanel, "", false)
