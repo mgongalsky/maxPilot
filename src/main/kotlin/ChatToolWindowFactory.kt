@@ -1,6 +1,7 @@
 package com.example.plugin
 
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -37,6 +38,15 @@ class ChatToolWindowFactory : ToolWindowFactory {
         mainPanel.add(scrollPane, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
+        // Функция для получения контекста текущего открытого файла
+        fun getCurrentFileContext(project: Project): String? {
+            val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
+            val document = editor.document
+            val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
+            val fileName = file?.name ?: "Unknown"
+            return "File: $fileName\nContent:\n${document.text}"
+        }
+
         // Функция для обработки запроса и генерации кода
         fun generateCode() {
             val userMessage = inputField.text.trim()
@@ -45,8 +55,14 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             chatArea.append("Вы: $userMessage\n")
-            // Выводим сообщение, что идёт генерация кода
+            // Сообщаем, что начинается генерация кода
             chatArea.append("Генерация кода идет...\n")
+
+            // Получаем контекст текущего открытого файла, если есть
+            val context = getCurrentFileContext(project)
+            if (context != null) {
+                chatArea.append("Учитывается контекст текущего файла:\n")
+            }
 
             // Загружаем настройки из файла openai.properties
             val props = loadOpenAiProperties()
@@ -63,16 +79,17 @@ class ChatToolWindowFactory : ToolWindowFactory {
             val selectedModel = props.getProperty("model") ?: "gpt-4o-mini-2024-08-06"
 
             try {
-                // Создаем экземпляр генератора и вызываем функцию для генерации ответа
+                // Создаем экземпляр генератора и вызываем функцию для генерации ответа,
+                // передавая текст запроса и контекст (если он есть)
                 val generator = OpenAiCodeGenerator(apiKey)
-                val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage)
-                // Выводим сообщение для пользователя из CodeResponse.user_message вместо полного кода
+                val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage, context)
+                // Выводим сообщение для пользователя из codeResponse.user_message
                 chatArea.append("Сообщение: ${codeResponse.user_message}\n\n")
                 // Создаем или обновляем файл в проекте
                 createOrUpdateFile(project, codeResponse.file_name, codeResponse.code)
-                chatArea.append("Файл '${codeResponse.file_name}' успешно создан/обновлён.\n")
+                chatArea.append("Файл '${codeResponse.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}\n")
                 // Выводим список файлов в корневой директории проекта
-                val baseDir = project.baseDir
+                /*val baseDir = project.baseDir
                 val psiManager = PsiManager.getInstance(project)
                 val psiDirectory = psiManager.findDirectory(baseDir)
                 if (psiDirectory != null) {
@@ -80,6 +97,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
                     chatArea.append("Список файлов в проекте:\n")
                     fileNames.forEach { chatArea.append("$it\n") }
                 }
+
+                 */
             } catch (e: Exception) {
                 chatArea.append("Ошибка генерации: ${e.message}\n")
             }

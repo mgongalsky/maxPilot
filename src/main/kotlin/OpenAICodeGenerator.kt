@@ -3,7 +3,6 @@ package com.example.plugin
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.*
-import java.io.InputStream
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -21,14 +20,14 @@ data class CodeResponse(
 
 // Функция для загрузки API-ключа из файла ресурсов (openai.properties)
 fun loadApiKey(): String {
-    val inputStream: InputStream = object {}.javaClass.getResourceAsStream("/openai.properties")
+    val inputStream = object {}.javaClass.getResourceAsStream("/openai.properties")
         ?: throw Exception("Файл openai.properties не найден в ресурсах")
     val properties = Properties()
     properties.load(inputStream)
     return properties.getProperty("api.key") ?: throw Exception("Свойство api.key не найдено в openai.properties")
 }
 
-// Класс для генерации CodeResponse по пользовательскому запросу
+// Класс для генерации CodeResponse по пользовательскому запросу с возможностью передачи контекста
 class OpenAiCodeGenerator(private val apiKey: String) {
     private val client: HttpClient = HttpClient.newBuilder().build()
 
@@ -50,30 +49,39 @@ class OpenAiCodeGenerator(private val apiKey: String) {
     /**
      * Генерирует объект CodeResponse по данному запросу.
      * @param userQuery Текст запроса от пользователя.
+     * @param context Дополнительный контекст (например, содержимое текущего файла), может быть null.
      * @return CodeResponse, содержащий сгенерированные данные.
      */
-    fun generateCodeResponse(userQuery: String): CodeResponse {
+    fun generateCodeResponse(userQuery: String, context: String? = null): CodeResponse {
+        // Формируем массив сообщений
+        val messagesArray = buildJsonArray {
+            // Системное сообщение с инструкцией
+            add(buildJsonObject {
+                put("role", "system")
+                put("content", "Твоя задача - сгенерировать код на питоне по запросу пользователя, его нужно положить в поле code" +
+                        "Пользователь может попросить доработать существующий код (явно или неявно). В этом случае старайся не создавать новых файлов, а исправлять те, которые тебе переданы в качестве контекста. Не меняй названия файлов file_name без надобности, но если логика подразумевает создание нового файла - то используй новое file_name, которое тебе кажется адекватным программе. " +
+                        "В поле user_message напиши свой ответ пользователю, чтобы он понял, что ты сделал - кратко. Куски кода вставлять - не надо, это будет сделано автоматически. " +
+                        "В поле description напиши краткое описание программы или файла" +
+                        "Ответ должен быть в формате JSON с ключами: file_name, description, code, user_message.")
+            })
+            // Если передан контекст, добавляем дополнительное сообщение
+            context?.let {
+                add(buildJsonObject {
+                    put("role", "system")
+                    put("content", "Текущий контекст файла:\n$it")
+                })
+            }
+            // Пользовательское сообщение – запрос от пользователя
+            add(buildJsonObject {
+                put("role", "user")
+                put("content", userQuery)
+            })
+        }
+
         // Формируем пейлоад запроса
         val payload = buildJsonObject {
             put("model", "gpt-4o-2024-08-06")
-            put("input", buildJsonArray {
-                // Системное сообщение с инструкцией
-                add(buildJsonObject {
-                    put("role", "system")
-                    put(
-                        "content",
-                        "Выполни задачу: напиши простую игру 'змейка' на Python. " +
-                                "Игра должна управляться стрелками и не содержать врагов. " +
-                                "Ответ должен быть в формате JSON с ключами: file_name, description, code, user_message."
-                    )
-                })
-                // Пользовательское сообщение – задаётся как параметр
-                add(buildJsonObject {
-                    put("role", "user")
-                    put("content", userQuery)
-                })
-            })
-            // Задаём формат структурированного ответа с использованием JSON-схемы
+            put("input", messagesArray)
             put("text", buildJsonObject {
                 put("format", buildJsonObject {
                     put("type", "json_schema")
@@ -123,20 +131,4 @@ class OpenAiCodeGenerator(private val apiKey: String) {
         // Десериализуем outputText в объект CodeResponse
         return Json.decodeFromString(outputText)
     }
-}
-
-// Точка входа: если файл запущен напрямую, выполняется блок main
-fun main() {
-    // Если не переданы аргументы, используем стандартный запрос для игры "змейка"
-    val defaultQuery = if (System.getenv("USER_QUERY").isNullOrEmpty()) {
-        "напиши нам змейку на питоне. управление стрелками, врага не нужно"
-    } else {
-        System.getenv("USER_QUERY")
-    }
-
-    val apiKey = loadApiKey()
-    val generator = OpenAiCodeGenerator(apiKey)
-    val codeResponse = generator.generateCodeResponse(defaultQuery)
-    println("Extracted game code:")
-    println(codeResponse.code)
 }
