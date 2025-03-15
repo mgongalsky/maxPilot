@@ -1,5 +1,6 @@
 package com.example.plugin
 
+import OpenAiCodeGenerator
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
@@ -19,10 +20,7 @@ import javax.swing.*
 class ChatToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        // Основная панель с BorderLayout
-        val mainPanel = JPanel(BorderLayout())
-
-        // Панель для истории диалога
+        // Панель для вывода диалога (JTextArea) и панели для списка файлов
         val chatArea = JTextArea().apply {
             isEditable = false
             lineWrap = true
@@ -34,11 +32,12 @@ class ChatToolWindowFactory : ToolWindowFactory {
         val filesPanel = JPanel(FlowLayout(FlowLayout.LEFT))
         filesPanel.border = BorderFactory.createTitledBorder("Созданные файлы")
 
-        // Объединяем чат и файлы в одну центральную панель
-        val centerPanel = JPanel()
-        centerPanel.layout = BoxLayout(centerPanel, BoxLayout.Y_AXIS)
-        centerPanel.add(scrollPane)
-        centerPanel.add(filesPanel)
+        // Объединяем чат и панель файлов в центральную панель
+        val centerPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            add(scrollPane)
+            add(filesPanel)
+        }
 
         // Панель ввода с текстовым полем и кнопкой "Сгенерировать"
         val inputPanel = JPanel(BorderLayout())
@@ -47,10 +46,12 @@ class ChatToolWindowFactory : ToolWindowFactory {
         inputPanel.add(inputField, BorderLayout.CENTER)
         inputPanel.add(generateButton, BorderLayout.EAST)
 
+        // Основная панель
+        val mainPanel = JPanel(BorderLayout())
         mainPanel.add(centerPanel, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        // Функция для добавления сообщения в чат
+        // Функция для добавления сообщения в чат (простой append для JTextArea)
         fun appendToChat(message: String) {
             chatArea.append(message + "\n")
         }
@@ -64,9 +65,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return "File: $fileName\nContent:\n${document.text}"
         }
 
-        // Функция для обновления панели с файлами – добавляет кнопку "Открыть" для нового файла
+        // Функция для обновления панели файлов – добавляет кнопку "Открыть" для нового файла
         fun addFileButton(project: Project, fileName: String) {
-            // Формируем путь к файлу (предполагаем, что файл находится в корневой директории проекта)
             val filePath = "${project.baseDir.path}/$fileName"
             val openButton = JButton("Открыть $fileName")
             openButton.addActionListener {
@@ -82,7 +82,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
             filesPanel.repaint()
         }
 
-        // Функция для обработки запроса и генерации кода
+        // Функция для обработки запроса и генерации кода для нескольких файлов
         fun generateCode() {
             val userMessage = inputField.text.trim()
             if (userMessage.isEmpty()) {
@@ -92,13 +92,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
             appendToChat("Вы: $userMessage")
             appendToChat("Генерация кода идет...")
 
-            // Получаем контекст текущего открытого файла, если есть
+            // Получаем контекст текущего файла (если имеется)
             val context = getCurrentFileContext(project)
             if (context != null) {
                 appendToChat("Контекст текущего файла загружен.")
             }
 
-            // Загружаем настройки из файла openai.properties
+            // Загружаем настройки из openai.properties
             val props = loadOpenAiProperties()
             if (props == null) {
                 JOptionPane.showMessageDialog(mainPanel, "Не удалось загрузить openai.properties из ресурсов.", "Ошибка", JOptionPane.ERROR_MESSAGE)
@@ -113,16 +113,15 @@ class ChatToolWindowFactory : ToolWindowFactory {
 
             try {
                 val generator = OpenAiCodeGenerator(apiKey)
-                // Передаем контекст, если он есть
-                val codeResponse: CodeResponse = generator.generateCodeResponse(userMessage, context)
-                appendToChat("Сообщение: ${codeResponse.user_message}")
-
-                // Создаем или обновляем файл в проекте
-                createOrUpdateFile(project, codeResponse.file_name, codeResponse.code)
-                appendToChat("Файл '${codeResponse.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}")
-
-                // Добавляем кнопку для открытия файла
-                addFileButton(project, codeResponse.file_name)
+                // Передаем контекст, если есть
+                val multiResponse = generator.generateCodeResponse(userMessage, context)
+                // Для каждого изменения (файла) выводим информацию в чат и добавляем кнопку "Открыть"
+                multiResponse.files.forEach { fileChange ->
+                    appendToChat("Сообщение: ${fileChange.user_message}")
+                    createOrUpdateFile(project, fileChange.file_name, fileChange.code)
+                    appendToChat("Файл '${fileChange.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}")
+                    addFileButton(project, fileChange.file_name)
+                }
             } catch (e: Exception) {
                 appendToChat("Ошибка генерации: ${e.message}")
             }

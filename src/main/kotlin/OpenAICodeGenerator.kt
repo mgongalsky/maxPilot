@@ -1,5 +1,3 @@
-package com.example.plugin
-
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.*
@@ -9,13 +7,19 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.Properties
 
-// Data class, соответствующий ожидаемому JSON-ответу
+// Data class для изменений одного файла
 @Serializable
-data class CodeResponse(
+data class FileChange(
     val file_name: String,    // Имя файла, например "snake.py"
-    val description: String,  // Краткое описание игры
-    val code: String,         // Код игры
+    val description: String,  // Краткое описание изменений или программы
+    val code: String,         // Новый или изменённый код
     val user_message: String  // Сообщение для пользователя
+)
+
+// Контейнер, содержащий список изменений для нескольких файлов
+@Serializable
+data class MultiCodeResponse(
+    val files: List<FileChange>
 )
 
 // Функция для загрузки API-ключа из файла ресурсов (openai.properties)
@@ -27,51 +31,58 @@ fun loadApiKey(): String {
     return properties.getProperty("api.key") ?: throw Exception("Свойство api.key не найдено в openai.properties")
 }
 
-// Класс для генерации CodeResponse по пользовательскому запросу с возможностью передачи контекста
+// Класс для генерации MultiCodeResponse по пользовательскому запросу с возможностью передачи контекста
 class OpenAiCodeGenerator(private val apiKey: String) {
     private val client: HttpClient = HttpClient.newBuilder().build()
 
-    // JSON-схема для ответа, заданная вручную
+    // JSON-схема для ответа, которая содержит список изменений для нескольких файлов
     private val schema = """
         {
           "type": "object",
           "properties": {
-              "file_name": { "type": "string" },
-              "description": { "type": "string" },
-              "code": { "type": "string" },
-              "user_message": { "type": "string" }
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file_name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "code": { "type": "string" },
+                  "user_message": { "type": "string" }
+                },
+                "required": ["file_name", "description", "code", "user_message"],
+                "additionalProperties": false
+              }
+            }
           },
-          "required": ["file_name", "description", "code", "user_message"],
+          "required": ["files"],
           "additionalProperties": false
         }
     """.trimIndent()
 
     /**
-     * Генерирует объект CodeResponse по данному запросу.
+     * Генерирует объект MultiCodeResponse по данному запросу.
      * @param userQuery Текст запроса от пользователя.
      * @param context Дополнительный контекст (например, содержимое текущего файла), может быть null.
-     * @return CodeResponse, содержащий сгенерированные данные.
+     * @return MultiCodeResponse, содержащий список изменений для файлов.
      */
-    fun generateCodeResponse(userQuery: String, context: String? = null): CodeResponse {
+    fun generateCodeResponse(userQuery: String, context: String? = null): MultiCodeResponse {
         // Формируем массив сообщений
         val messagesArray = buildJsonArray {
-            // Системное сообщение с инструкцией
             add(buildJsonObject {
                 put("role", "system")
-                put("content", "Твоя задача - сгенерировать код на питоне по запросу пользователя, его нужно положить в поле code" +
-                        "Пользователь может попросить доработать существующий код (явно или неявно). В этом случае старайся не создавать новых файлов, а исправлять те, которые тебе переданы в качестве контекста. Не меняй названия файлов file_name без надобности, но если логика подразумевает создание нового файла - то используй новое file_name, которое тебе кажется адекватным программе. " +
-                        "В поле user_message напиши свой ответ пользователю, чтобы он понял, что ты сделал - кратко. Куски кода вставлять - не надо, это будет сделано автоматически. " +
-                        "В поле description напиши краткое описание программы или файла" +
-                        "Ответ должен быть в формате JSON с ключами: file_name, description, code, user_message.")
+                put("content", "Твоя задача — сгенерировать изменения для одного или нескольких файлов по запросу пользователя. " +
+                        "Если пользователь просит доработать существующий код, используй предоставленный контекст. " +
+                        "Ответ должен быть в формате JSON с ключом 'files', содержащим массив объектов, " +
+                        "каждый из которых имеет следующие поля: file_name, description, code, user_message. " +
+                        "Не меняй file_name без необходимости. Если требуется создать новый файл, используй новое file_name.")
             })
-            // Если передан контекст, добавляем дополнительное сообщение
             context?.let {
                 add(buildJsonObject {
                     put("role", "system")
                     put("content", "Текущий контекст файла:\n$it")
                 })
             }
-            // Пользовательское сообщение – запрос от пользователя
             add(buildJsonObject {
                 put("role", "user")
                 put("content", userQuery)
@@ -127,8 +138,25 @@ class OpenAiCodeGenerator(private val apiKey: String) {
         }
 
         println("Output text:\n$outputText")
-
-        // Десериализуем outputText в объект CodeResponse
         return Json.decodeFromString(outputText)
+    }
+}
+
+// Точка входа: если файл запущен напрямую, выполняется блок main
+fun main() {
+    val defaultQuery = if (System.getenv("USER_QUERY").isNullOrEmpty()) {
+        "Обнови код змейки: добавь возможность съедать яблоки и увеличивать длину змейки"
+    } else {
+        System.getenv("USER_QUERY")
+    }
+    val apiKey = loadApiKey()
+    val generator = OpenAiCodeGenerator(apiKey)
+    val multiResponse = generator.generateCodeResponse(defaultQuery)
+    println("Extracted file changes:")
+    multiResponse.files.forEach { fileChange ->
+        println("File: ${fileChange.file_name}")
+        println("Description: ${fileChange.description}")
+        println("User Message: ${fileChange.user_message}")
+        println("Code:\n${fileChange.code}\n")
     }
 }
