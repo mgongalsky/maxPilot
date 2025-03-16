@@ -1,6 +1,7 @@
 package com.example.plugin
 
 import OpenAiCodeGenerator
+import OpenAiContextFilter
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
@@ -18,63 +19,49 @@ import java.awt.FlowLayout
 import java.util.Properties
 import javax.swing.*
 
-// Импорт нового класса для фильтрации контекста (предполагается, что он находится в том же пакете)
-import OpenAiContextFilter
-
 class ChatToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        // Панель для истории диалога (JTextArea) и панель для списка файлов
+        // Панель для истории диалога и панель для файлов
         val chatArea = JTextArea().apply {
             isEditable = false
             lineWrap = true
             wrapStyleWord = true
         }
         val scrollPane = JScrollPane(chatArea)
-
-        // Панель для вывода списка созданных файлов с кнопками "Открыть"
         val filesPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
             border = BorderFactory.createTitledBorder("Созданные файлы")
         }
-
-        // Объединяем чат и панель файлов в одну центральную панель
         val centerPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(scrollPane)
             add(filesPanel)
         }
 
-        // Используем JTextArea для ввода с поддержкой переноса строк
+        // Поле ввода и панель кнопок
         val inputField = JTextArea().apply {
             lineWrap = true
             wrapStyleWord = true
             rows = 3
         }
         val inputScrollPane = JScrollPane(inputField)
-
-        // Панель кнопок: "Сгенерировать" и "Анализ узлов"
         val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT))
+        // Одна кнопка объединяет два шага
         val generateButton = JButton("Сгенерировать")
-        val analyzeButton = JButton("Анализ узлов")
         buttonPanel.add(generateButton)
-        buttonPanel.add(analyzeButton)
-
-        // Панель ввода с нашим inputScrollPane и панелью кнопок
         val inputPanel = JPanel(BorderLayout())
         inputPanel.add(inputScrollPane, BorderLayout.CENTER)
         inputPanel.add(buttonPanel, BorderLayout.EAST)
-
-        // Основная панель окна
         val mainPanel = JPanel(BorderLayout())
         mainPanel.add(centerPanel, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        // Функция для добавления сообщения в чат
+        // Функция для добавления сообщений в чат
         fun appendToChat(message: String) {
             chatArea.append(message + "\n")
         }
 
-        // Функция для получения контекста текущего открытого файла
+        // Получение контекста текущего открытого файла (если требуется)
         fun getCurrentFileContext(project: Project): String? {
             val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
             val document = editor.document
@@ -83,16 +70,33 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return "File: $fileName\nContent:\n${document.text}"
         }
 
-        // Функция для обновления панели с файлами – добавляет кнопку "Открыть" для нового файла
+        // Добавление кнопки для открытия файла
         fun addFileButton(project: Project, fileName: String) {
-            val filePath = "${project.baseDir.path}/$fileName"
-            val openButton = JButton("Открыть $fileName")
+            val basePath = project.baseDir.path
+            // Если fileName уже содержит basePath или начинается с буквы диска (Windows), считаем путь абсолютным
+            val filePath = if (fileName.startsWith(basePath) || fileName.matches(Regex("^[A-Za-z]:.*"))) {
+                fileName
+            } else {
+                "$basePath/$fileName"
+            }
+
+            // Извлекаем только название файла для отображения на кнопке
+            val displayName = fileName
+                .replace("\\", "/")      // заменяем обратные слеши на прямые
+                .substringAfterLast("/") // берём всё, что после последнего '/'
+
+            val openButton = JButton(displayName)
             openButton.addActionListener {
                 val virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
                 if (virtualFile != null) {
                     FileEditorManager.getInstance(project).openFile(virtualFile, true)
                 } else {
-                    JOptionPane.showMessageDialog(null, "Не удалось найти файл: $filePath", "Ошибка", JOptionPane.ERROR_MESSAGE)
+                    JOptionPane.showMessageDialog(
+                        null,
+                        "Не удалось найти файл: $filePath",
+                        "Ошибка",
+                        JOptionPane.ERROR_MESSAGE
+                    )
                 }
             }
             filesPanel.add(openButton)
@@ -100,50 +104,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
             filesPanel.repaint()
         }
 
-        // Функция для обработки запроса и генерации кода для нескольких файлов
-        fun generateCode() {
-            val userMessage = inputField.text.trim()
-            if (userMessage.isEmpty()) {
-                JOptionPane.showMessageDialog(mainPanel, "Пожалуйста, введите описание программы.", "Ошибка", JOptionPane.ERROR_MESSAGE)
-                return
-            }
-            appendToChat("Вы: $userMessage")
-            appendToChat("Генерация кода идет...")
-
-            // Получаем контекст текущего файла (если имеется)
-            val context = getCurrentFileContext(project)
-            if (context != null) {
-                appendToChat("Контекст текущего файла загружен.")
-            }
-
-            // Загружаем настройки из openai.properties
-            val props = loadOpenAiProperties()
-            if (props == null) {
-                JOptionPane.showMessageDialog(mainPanel, "Не удалось загрузить openai.properties из ресурсов.", "Ошибка", JOptionPane.ERROR_MESSAGE)
-                return
-            }
-            val apiKey = props.getProperty("api.key")
-            if (apiKey.isNullOrEmpty()) {
-                JOptionPane.showMessageDialog(mainPanel, "Свойство api.key не найдено или пустое.", "Ошибка", JOptionPane.ERROR_MESSAGE)
-                return
-            }
-            // Здесь оставляем работу с OpenAiCodeGenerator для генерации кода
-            try {
-                val generator = OpenAiCodeGenerator(apiKey)
-                val multiResponse = generator.generateCodeResponse(userMessage, context)
-                multiResponse.files.forEach { fileChange ->
-                    appendToChat("Сообщение: ${fileChange.user_message}")
-                    createOrUpdateFile(project, fileChange.file_name, fileChange.code)
-                    appendToChat("Файл '${fileChange.file_name}' успешно создан/обновлён по пути: ${project.baseDir.path}")
-                    addFileButton(project, fileChange.file_name)
-                }
-            } catch (e: Exception) {
-                appendToChat("Ошибка генерации: ${e.message}")
-            }
-            inputField.text = ""
-        }
-
-        // Функция для построения полного дерева проекта: обход файлов .py и поиск строк с "class " и "def "
+        // Рекурсивное построение дерева проекта: файлы с расширением .py и их узлы (объявления классов и функций)
         fun buildProjectTree(project: Project): String {
             val psiManager = PsiManager.getInstance(project)
             val baseDir = project.baseDir
@@ -175,23 +136,49 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return structureBuilder.toString()
         }
 
-        // Функция для отправки PSI-дерева и задания в OpenAiContextFilter
-        fun analyzeNodes() {
-            // Собираем полное дерево проекта
-            val fullTree = buildProjectTree(project)
-            // Выводим полное дерево в стандартный output (консоль)
-            println(fullTree)
-            // Получаем задание для фильтрации узлов.
-            // Если поле ввода пустое, предлагаем ввести задание через диалог
-            val task = inputField.text.trim().ifEmpty {
-                JOptionPane.showInputDialog(null, "Введите задание для фильтрации узлов:")
-                    ?: ""
+        // Простейший метод для извлечения содержимого узла (объявления и несколько следующих строк)
+        fun extractNodeContent(project: Project, filePath: String, nodeName: String, nodeType: String): String {
+            val psiManager = PsiManager.getInstance(project)
+            val virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
+                ?: return "Файл не найден: $filePath"
+            val psiFile = psiManager.findFile(virtualFile)
+                ?: return "PSI файл не найден для: $filePath"
+            val lines = psiFile.text.lines()
+            val resultLines = mutableListOf<String>()
+            val prefix = if (nodeType.equals("Класс", ignoreCase = true)) "class $nodeName" else "def $nodeName"
+            for (i in lines.indices) {
+                if (lines[i].trim().startsWith(prefix)) {
+                    // Возьмем найденную строку и следующие 5 строк (если есть)
+                    for (j in i until minOf(i + 6, lines.size)) {
+                        resultLines.add(lines[j])
+                    }
+                    break
+                }
             }
-            if (task.isEmpty()) {
-                appendToChat("Задание для фильтрации узлов не задано.")
+            return if (resultLines.isNotEmpty()) resultLines.joinToString("\n")
+            else "Не найден узел $nodeName в файле $filePath"
+        }
+
+        // Основная функция, объединяющая два шага:
+        // 1. Отправляем задание и дерево узлов в OpenAiContextFilter для получения релевантных узлов.
+        // 2. На основе содержимого этих узлов формируем новый контекст и отправляем задание в OpenAiCodeGenerator для доработки.
+        fun generateAndUpdateNodes() {
+            val userTask = inputField.text.trim()
+            if (userTask.isEmpty()) {
+                JOptionPane.showMessageDialog(
+                    mainPanel,
+                    "Пожалуйста, введите задание.",
+                    "Ошибка",
+                    JOptionPane.ERROR_MESSAGE
+                )
                 return
             }
-            // Загружаем настройки (API-ключ)
+            appendToChat("Вы: $userTask")
+            appendToChat("Анализ узлов проекта идет...")
+
+            // Шаг 1: Собираем дерево проекта и отправляем задание в OpenAiContextFilter
+            val projectTree = buildProjectTree(project)
+            println("Полное PSI-дерево проекта:\n$projectTree")
             val props = loadOpenAiProperties()
             if (props == null) {
                 appendToChat("Не удалось загрузить openai.properties из ресурсов.")
@@ -202,29 +189,47 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 appendToChat("Свойство api.key не найдено или пустое.")
                 return
             }
-            // Создаем экземпляр OpenAiContextFilter
-            val filter = OpenAiContextFilter(apiKey)
+            val contextFilter = OpenAiContextFilter(apiKey)
             try {
-                // Отправляем задание и дерево в OpenAI и получаем релевантные узлы
-                val response = filter.filterNodes(task, fullTree)
-                appendToChat("Релевантные узлы для задачи '$task':")
-                response.nodes.forEach { node ->
-                    appendToChat("Файл: ${node.file}, ${node.nodeType}: ${node.name}" +
-                            if (node.description.isNotEmpty()) " (${node.description})" else "")
+                val codeNodesResponse = contextFilter.filterNodes(userTask, projectTree)
+                appendToChat("Релевантные узлы для задачи '$userTask':")
+                codeNodesResponse.nodes.forEach { node ->
+                    appendToChat("Файл: ${node.file}, ${node.nodeType}: ${node.name} (${node.description})")
+                }
+                // Шаг 2: Извлекаем содержимое каждого узла для формирования контекста доработки
+                val nodesContextBuilder = StringBuilder()
+                codeNodesResponse.nodes.forEach { node ->
+                    val nodeContent = extractNodeContent(project, node.file, node.name, node.nodeType)
+                    nodesContextBuilder.append("File: ${node.file}\n")
+                    nodesContextBuilder.append("${node.nodeType}: ${node.name}\n")
+                    nodesContextBuilder.append("Content:\n$nodeContent\n")
+                    nodesContextBuilder.append("-----\n")
+                }
+                val nodesContext = nodesContextBuilder.toString()
+                // Отправляем задание с контекстом узлов в OpenAiCodeGenerator
+                val combinedQuery = "$userTask\n\nИспользуй следующий контекст узлов для доработки кода:"
+                val codeGenerator = OpenAiCodeGenerator(apiKey)
+                appendToChat("Отправляем запрос на доработку кода с учетом узлов...")
+                val multiResponse = codeGenerator.generateCodeResponse(combinedQuery, nodesContext)
+                // Обновляем файлы согласно полученным изменениям
+                multiResponse.files.forEach { fileChange ->
+                    appendToChat("Изменения для файла ${fileChange.file_name}: ${fileChange.user_message}")
+                    createOrUpdateFile(project, fileChange.file_name, fileChange.code)
+                    appendToChat("Файл '${fileChange.file_name}' успешно обновлён.")
+                    addFileButton(project, fileChange.file_name)
                 }
             } catch (e: Exception) {
-                appendToChat("Ошибка фильтрации узлов: ${e.message}")
+                appendToChat("Ошибка в процессе обновления узлов: ${e.message}")
             }
+            inputField.text = ""
         }
 
-        // Привязываем действия к кнопкам
-        generateButton.addActionListener { generateCode() }
-        analyzeButton.addActionListener { analyzeNodes() }
-
+        // Привязываем действие кнопки "Сгенерировать" к объединенной функции
+        generateButton.addActionListener { generateAndUpdateNodes() }
         inputField.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyReleased(e: java.awt.event.KeyEvent?) {
                 if (e?.keyCode == java.awt.event.KeyEvent.VK_ENTER) {
-                    generateCode()
+                    generateAndUpdateNodes()
                 }
             }
         })
@@ -249,22 +254,45 @@ class ChatToolWindowFactory : ToolWindowFactory {
      */
     private fun createOrUpdateFile(project: Project, fileName: String, code: String) {
         WriteCommandAction.runWriteCommandAction(project) {
-            val baseDir = project.baseDir
             val psiManager = PsiManager.getInstance(project)
-            val psiDirectory = psiManager.findDirectory(baseDir) ?: return@runWriteCommandAction
-            val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
-            var psiFile = psiDirectory.findFile(fileName)
-            if (psiFile == null) {
-                psiFile = PsiFileFactory.getInstance(project)
-                    .createFileFromText(fileName, pythonLanguage, code)
-                psiDirectory.add(psiFile)
-            } else {
-                val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
-                if (document != null) {
-                    document.setText(code)
-                    PsiDocumentManager.getInstance(project).commitDocument(document)
+            // Пытаемся найти файл по абсолютному пути рекурсивно начиная от project.baseDir
+            val existingVirtualFile = findVirtualFileByAbsolutePath(project.baseDir, fileName)
+            if (existingVirtualFile != null) {
+                val psiFile = psiManager.findFile(existingVirtualFile)
+                if (psiFile != null) {
+                    val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+                    if (document != null) {
+                        document.setText(code)
+                        PsiDocumentManager.getInstance(project).commitDocument(document)
+                    }
                 }
+            } else {
+                // Если файл не найден, пытаемся создать его.
+                // Если fileName начинается с базового пути, извлекаем относительный путь.
+                val basePath = project.baseDir.path
+                val relativePath =
+                    if (fileName.startsWith(basePath)) fileName.substring(basePath.length + 1) else fileName
+                // Если относительный путь содержит поддиректории, можно добавить их создание.
+                val psiDirectory = PsiManager.getInstance(project).findDirectory(project.baseDir)
+                    ?: return@runWriteCommandAction
+                val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
+                val psiFile = PsiFileFactory.getInstance(project)
+                    .createFileFromText(relativePath, pythonLanguage, code)
+                psiDirectory.add(psiFile)
             }
         }
+    }
+
+    // Рекурсивная функция для поиска виртуального файла по абсолютному пути, начиная с данной директории
+    private fun findVirtualFileByAbsolutePath(directory: VirtualFile, targetPath: String): VirtualFile? {
+        for (child in directory.children) {
+            if (child.isDirectory) {
+                val found = findVirtualFileByAbsolutePath(child, targetPath)
+                if (found != null) return found
+            } else if (child.path == targetPath) {
+                return child
+            }
+        }
+        return null
     }
 }
