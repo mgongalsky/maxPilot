@@ -18,6 +18,9 @@ import java.awt.FlowLayout
 import java.util.Properties
 import javax.swing.*
 
+// Импорт нового класса для фильтрации контекста (предполагается, что он находится в том же пакете)
+import OpenAiContextFilter
+
 class ChatToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -49,12 +52,12 @@ class ChatToolWindowFactory : ToolWindowFactory {
         }
         val inputScrollPane = JScrollPane(inputField)
 
-        // Панель кнопок: "Сгенерировать" и "Показать структуру"
+        // Панель кнопок: "Сгенерировать" и "Анализ узлов"
         val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT))
         val generateButton = JButton("Сгенерировать")
-        val structureButton = JButton("Показать структуру")
+        val analyzeButton = JButton("Анализ узлов")
         buttonPanel.add(generateButton)
-        buttonPanel.add(structureButton)
+        buttonPanel.add(analyzeButton)
 
         // Панель ввода с нашим inputScrollPane и панелью кнопок
         val inputPanel = JPanel(BorderLayout())
@@ -124,13 +127,10 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 JOptionPane.showMessageDialog(mainPanel, "Свойство api.key не найдено или пустое.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
-            val selectedModel = props.getProperty("model") ?: "gpt-4o-mini-2024-08-06"
-
+            // Здесь оставляем работу с OpenAiCodeGenerator для генерации кода
             try {
                 val generator = OpenAiCodeGenerator(apiKey)
-                // Передаем контекст, если он есть
                 val multiResponse = generator.generateCodeResponse(userMessage, context)
-                // Для каждого изменения (файла) выводим информацию и добавляем кнопку "Открыть"
                 multiResponse.files.forEach { fileChange ->
                     appendToChat("Сообщение: ${fileChange.user_message}")
                     createOrUpdateFile(project, fileChange.file_name, fileChange.code)
@@ -143,14 +143,12 @@ class ChatToolWindowFactory : ToolWindowFactory {
             inputField.text = ""
         }
 
-        // Функция для вывода структуры проекта: обход файлов .py и поиск строк с "class " и "def "
-        fun printProjectStructure(project: Project) {
+        // Функция для построения полного дерева проекта: обход файлов .py и поиск строк с "class " и "def "
+        fun buildProjectTree(project: Project): String {
             val psiManager = PsiManager.getInstance(project)
             val baseDir = project.baseDir
             val structureBuilder = StringBuilder()
             structureBuilder.append("Структура проекта:\n")
-
-            // Рекурсивный обход директорий
             fun processDirectory(directory: VirtualFile) {
                 for (child in directory.children) {
                     if (child.isDirectory) {
@@ -159,10 +157,8 @@ class ChatToolWindowFactory : ToolWindowFactory {
                         val psiFile = psiManager.findFile(child)
                         if (psiFile != null) {
                             structureBuilder.append("Файл: ${child.path}\n")
-                            // Перебираем непосредственных детей файла
                             psiFile.children.forEach { element ->
                                 val text = element.text.trim()
-                                // Простейшая проверка на наличие объявления класса или функции
                                 if (text.startsWith("class ")) {
                                     val name = text.substringAfter("class ").substringBefore("(").substringBefore(" ")
                                     structureBuilder.append("    Класс: $name\n")
@@ -175,14 +171,55 @@ class ChatToolWindowFactory : ToolWindowFactory {
                     }
                 }
             }
-
             processDirectory(baseDir)
-            // Вывод результата в консоль (можно изменить вывод на окно, если потребуется)
-            println(structureBuilder.toString())
+            return structureBuilder.toString()
         }
 
+        // Функция для отправки PSI-дерева и задания в OpenAiContextFilter
+        fun analyzeNodes() {
+            // Собираем полное дерево проекта
+            val fullTree = buildProjectTree(project)
+            // Выводим полное дерево в стандартный output (консоль)
+            println(fullTree)
+            // Получаем задание для фильтрации узлов.
+            // Если поле ввода пустое, предлагаем ввести задание через диалог
+            val task = inputField.text.trim().ifEmpty {
+                JOptionPane.showInputDialog(null, "Введите задание для фильтрации узлов:")
+                    ?: ""
+            }
+            if (task.isEmpty()) {
+                appendToChat("Задание для фильтрации узлов не задано.")
+                return
+            }
+            // Загружаем настройки (API-ключ)
+            val props = loadOpenAiProperties()
+            if (props == null) {
+                appendToChat("Не удалось загрузить openai.properties из ресурсов.")
+                return
+            }
+            val apiKey = props.getProperty("api.key")
+            if (apiKey.isNullOrEmpty()) {
+                appendToChat("Свойство api.key не найдено или пустое.")
+                return
+            }
+            // Создаем экземпляр OpenAiContextFilter
+            val filter = OpenAiContextFilter(apiKey)
+            try {
+                // Отправляем задание и дерево в OpenAI и получаем релевантные узлы
+                val response = filter.filterNodes(task, fullTree)
+                appendToChat("Релевантные узлы для задачи '$task':")
+                response.nodes.forEach { node ->
+                    appendToChat("Файл: ${node.file}, ${node.nodeType}: ${node.name}" +
+                            if (node.description.isNotEmpty()) " (${node.description})" else "")
+                }
+            } catch (e: Exception) {
+                appendToChat("Ошибка фильтрации узлов: ${e.message}")
+            }
+        }
+
+        // Привязываем действия к кнопкам
         generateButton.addActionListener { generateCode() }
-        structureButton.addActionListener { printProjectStructure(project) }
+        analyzeButton.addActionListener { analyzeNodes() }
 
         inputField.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyReleased(e: java.awt.event.KeyEvent?) {
