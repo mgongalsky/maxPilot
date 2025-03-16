@@ -5,6 +5,7 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.psi.PsiDocumentManager
@@ -40,21 +41,27 @@ class ChatToolWindowFactory : ToolWindowFactory {
             add(filesPanel)
         }
 
-        // Используем JTextArea для ввода с поддержкой переноса строк вместо JTextField
+        // Используем JTextArea для ввода с поддержкой переноса строк
         val inputField = JTextArea().apply {
             lineWrap = true
             wrapStyleWord = true
-            rows = 3 // количество строк по умолчанию
+            rows = 3
         }
         val inputScrollPane = JScrollPane(inputField)
 
-        // Панель ввода с нашим inputScrollPane и кнопкой "Сгенерировать"
-        val inputPanel = JPanel(BorderLayout())
+        // Панель кнопок: "Сгенерировать" и "Показать структуру"
+        val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT))
         val generateButton = JButton("Сгенерировать")
-        inputPanel.add(inputScrollPane, BorderLayout.CENTER)
-        inputPanel.add(generateButton, BorderLayout.EAST)
+        val structureButton = JButton("Показать структуру")
+        buttonPanel.add(generateButton)
+        buttonPanel.add(structureButton)
 
-        // Основная панель
+        // Панель ввода с нашим inputScrollPane и панелью кнопок
+        val inputPanel = JPanel(BorderLayout())
+        inputPanel.add(inputScrollPane, BorderLayout.CENTER)
+        inputPanel.add(buttonPanel, BorderLayout.EAST)
+
+        // Основная панель окна
         val mainPanel = JPanel(BorderLayout())
         mainPanel.add(centerPanel, BorderLayout.CENTER)
         mainPanel.add(inputPanel, BorderLayout.SOUTH)
@@ -136,7 +143,47 @@ class ChatToolWindowFactory : ToolWindowFactory {
             inputField.text = ""
         }
 
+        // Функция для вывода структуры проекта: обход файлов .py и поиск строк с "class " и "def "
+        fun printProjectStructure(project: Project) {
+            val psiManager = PsiManager.getInstance(project)
+            val baseDir = project.baseDir
+            val structureBuilder = StringBuilder()
+            structureBuilder.append("Структура проекта:\n")
+
+            // Рекурсивный обход директорий
+            fun processDirectory(directory: VirtualFile) {
+                for (child in directory.children) {
+                    if (child.isDirectory) {
+                        processDirectory(child)
+                    } else if (child.extension == "py") {
+                        val psiFile = psiManager.findFile(child)
+                        if (psiFile != null) {
+                            structureBuilder.append("Файл: ${child.path}\n")
+                            // Перебираем непосредственных детей файла
+                            psiFile.children.forEach { element ->
+                                val text = element.text.trim()
+                                // Простейшая проверка на наличие объявления класса или функции
+                                if (text.startsWith("class ")) {
+                                    val name = text.substringAfter("class ").substringBefore("(").substringBefore(" ")
+                                    structureBuilder.append("    Класс: $name\n")
+                                } else if (text.startsWith("def ")) {
+                                    val name = text.substringAfter("def ").substringBefore("(").substringBefore(" ")
+                                    structureBuilder.append("    Функция: $name\n")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            processDirectory(baseDir)
+            // Вывод результата в консоль (можно изменить вывод на окно, если потребуется)
+            println(structureBuilder.toString())
+        }
+
         generateButton.addActionListener { generateCode() }
+        structureButton.addActionListener { printProjectStructure(project) }
+
         inputField.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyReleased(e: java.awt.event.KeyEvent?) {
                 if (e?.keyCode == java.awt.event.KeyEvent.VK_ENTER) {
