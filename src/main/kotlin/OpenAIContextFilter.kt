@@ -1,3 +1,5 @@
+package com.example.plugin
+
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.*
@@ -5,6 +7,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.util.Properties
 
 // Data class для представления одного узла PSI, релевантного для задачи
 @Serializable
@@ -12,7 +15,8 @@ data class CodeNode(
     val file: String,       // Имя или путь файла
     val nodeType: String,   // Тип узла, например "Класс" или "Функция"
     val name: String,       // Имя узла
-    val description: String // Краткое описание, почему этот узел полезен
+    val description: String, // Краткое описание, почему этот узел полезен
+    val parent_signature: String // Родительский элемент; если отсутствует, передавайте пустую строку
 )
 
 // Контейнер для ответа с узлами
@@ -25,7 +29,7 @@ data class CodeNodesResponse(
 class OpenAiContextFilter(private val apiKey: String) {
     private val client: HttpClient = HttpClient.newBuilder().build()
 
-    // Обновлённая JSON-схема: теперь required включает все ключи (в том числе "description")
+    // Обновлённая JSON-схема: теперь в "required" перечислены все ключи, включая "parent_signature"
     private val schema = """
         {
           "type": "object",
@@ -38,9 +42,10 @@ class OpenAiContextFilter(private val apiKey: String) {
                   "file": { "type": "string" },
                   "nodeType": { "type": "string" },
                   "name": { "type": "string" },
-                  "description": { "type": "string" }
+                  "description": { "type": "string" },
+                  "parent_signature": { "type": "string" }
                 },
-                "required": ["file", "nodeType", "name", "description"],
+                "required": ["file", "nodeType", "name", "description", "parent_signature"],
                 "additionalProperties": false
               }
             }
@@ -58,15 +63,16 @@ class OpenAiContextFilter(private val apiKey: String) {
      * @return CodeNodesResponse, содержащий список узлов, полезных для выполнения задачи.
      */
     fun filterNodes(userTask: String, tree: String): CodeNodesResponse {
-        // Формируем массив сообщений для запроса:
+        // Формируем массив сообщений для запроса
         val messagesArray = buildJsonArray {
             add(buildJsonObject {
                 put("role", "system")
                 put("content", "Ты ассистент, который помогает определить, какие узлы из данного PSI-дерева полезны для выполнения задачи. " +
                         "Тебе предоставлены задание и дерево проекта. Верни только те узлы, которые имеют отношение к задаче. " +
+                        "Если узел является функцией, укажи его родительский элемент (например, класс), если он существует. " +
                         "Ответ должен быть в формате JSON с ключом 'nodes', содержащим массив объектов, где каждый объект имеет поля: " +
-                        "'file' (имя или путь файла), 'nodeType' (например, 'Класс' или 'Функция'), 'name' (имя узла) и 'description', " +
-                        "кратко описывающее, почему данный узел полезен.")
+                        "'file' (имя или путь файла), 'nodeType' (например, 'Класс' или 'Функция'), 'name' (имя узла), " +
+                        "'description' (краткое описание, почему данный узел полезен) и 'parent_signature' (пустая строка, если родителя нет).")
             })
             // Передаём дерево проекта как системное сообщение
             add(buildJsonObject {
@@ -94,11 +100,11 @@ class OpenAiContextFilter(private val apiKey: String) {
             })
         }
 
-        // Сериализуем пейлоад в строку JSON
+        // Сериализуем пейлоад в JSON-строку
         val jsonPayload = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), payload)
         println("Request payload for context filtering:\n$jsonPayload")
 
-        // Создаем HTTP POST-запрос к API
+        // Создаем HTTP POST-запрос к OpenAI API
         val request = HttpRequest.newBuilder()
             .uri(URI.create("https://api.openai.com/v1/responses"))
             .header("Authorization", "Bearer $apiKey")

@@ -1,7 +1,5 @@
 package com.example.plugin
 
-import OpenAiCodeGenerator
-import OpenAiContextFilter
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
@@ -10,6 +8,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiManager
 import com.intellij.ui.content.ContentFactory
@@ -18,6 +17,12 @@ import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.util.Properties
 import javax.swing.*
+
+// Топ-левел функция для извлечения сигнатуры PSI-элемента
+fun extractSignature(element: PsiElement): String {
+    val text = element.text.trim()
+    return text.substringBefore("(").trim()
+}
 
 class ChatToolWindowFactory : ToolWindowFactory {
 
@@ -46,7 +51,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
         }
         val inputScrollPane = JScrollPane(inputField)
         val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT))
-        // Одна кнопка объединяет два шага
         val generateButton = JButton("Сгенерировать")
         buttonPanel.add(generateButton)
         val inputPanel = JPanel(BorderLayout())
@@ -70,21 +74,15 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return "File: $fileName\nContent:\n${document.text}"
         }
 
-        // Добавление кнопки для открытия файла
+        // Добавление кнопки для открытия файла (отображается только имя файла)
         fun addFileButton(project: Project, fileName: String) {
             val basePath = project.baseDir.path
-            // Если fileName уже содержит basePath или начинается с буквы диска (Windows), считаем путь абсолютным
             val filePath = if (fileName.startsWith(basePath) || fileName.matches(Regex("^[A-Za-z]:.*"))) {
                 fileName
             } else {
                 "$basePath/$fileName"
             }
-
-            // Извлекаем только название файла для отображения на кнопке
-            val displayName = fileName
-                .replace("\\", "/")      // заменяем обратные слеши на прямые
-                .substringAfterLast("/") // берём всё, что после последнего '/'
-
+            val displayName = fileName.replace("\\", "/").substringAfterLast("/")
             val openButton = JButton(displayName)
             openButton.addActionListener {
                 val virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
@@ -104,28 +102,28 @@ class ChatToolWindowFactory : ToolWindowFactory {
             filesPanel.repaint()
         }
 
-        // Рекурсивное построение дерева проекта: файлы с расширением .py и их узлы (объявления классов и функций)
+        // Рекурсивное построение PSI-дерева проекта для файлов .py,
+        // исключая системные папки ("venv", ".idea", "build", "out", "dist")
         fun buildProjectTree(project: Project): String {
             val psiManager = PsiManager.getInstance(project)
             val baseDir = project.baseDir
             val structureBuilder = StringBuilder()
             structureBuilder.append("Структура проекта:\n")
+            val excludedDirs = setOf("venv", ".idea", "build", "out", "dist")
             fun processDirectory(directory: VirtualFile) {
                 for (child in directory.children) {
                     if (child.isDirectory) {
+                        if (child.name in excludedDirs) continue
                         processDirectory(child)
                     } else if (child.extension == "py") {
+                        structureBuilder.append("Файл: ${child.path}\n")
                         val psiFile = psiManager.findFile(child)
                         if (psiFile != null) {
-                            structureBuilder.append("Файл: ${child.path}\n")
                             psiFile.children.forEach { element ->
                                 val text = element.text.trim()
-                                if (text.startsWith("class ")) {
-                                    val name = text.substringAfter("class ").substringBefore("(").substringBefore(" ")
-                                    structureBuilder.append("    Класс: $name\n")
-                                } else if (text.startsWith("def ")) {
-                                    val name = text.substringAfter("def ").substringBefore("(").substringBefore(" ")
-                                    structureBuilder.append("    Функция: $name\n")
+                                if (text.startsWith("class ") || text.startsWith("def ")) {
+                                    val signature = text.substringBefore("(").trim()
+                                    structureBuilder.append("    $signature\n")
                                 }
                             }
                         }
@@ -136,50 +134,26 @@ class ChatToolWindowFactory : ToolWindowFactory {
             return structureBuilder.toString()
         }
 
-        // Простейший метод для извлечения содержимого узла (объявления и несколько следующих строк)
-        fun extractNodeContent(project: Project, filePath: String, nodeName: String, nodeType: String): String {
-            val psiManager = PsiManager.getInstance(project)
-            val virtualFile = LocalFileSystem.getInstance().findFileByPath(filePath)
-                ?: return "Файл не найден: $filePath"
-            val psiFile = psiManager.findFile(virtualFile)
-                ?: return "PSI файл не найден для: $filePath"
-            val lines = psiFile.text.lines()
-            val resultLines = mutableListOf<String>()
-            val prefix = if (nodeType.equals("Класс", ignoreCase = true)) "class $nodeName" else "def $nodeName"
-            for (i in lines.indices) {
-                if (lines[i].trim().startsWith(prefix)) {
-                    // Возьмем найденную строку и следующие 5 строк (если есть)
-                    for (j in i until minOf(i + 6, lines.size)) {
-                        resultLines.add(lines[j])
-                    }
-                    break
-                }
-            }
-            return if (resultLines.isNotEmpty()) resultLines.joinToString("\n")
-            else "Не найден узел $nodeName в файле $filePath"
-        }
-
-        // Основная функция, объединяющая два шага:
-        // 1. Отправляем задание и дерево узлов в OpenAiContextFilter для получения релевантных узлов.
-        // 2. На основе содержимого этих узлов формируем новый контекст и отправляем задание в OpenAiCodeGenerator для доработки.
+        // Основная функция: отправка запроса к OpenAI, получение ответа и обновление PSI
         fun generateAndUpdateNodes() {
             val userTask = inputField.text.trim()
             if (userTask.isEmpty()) {
-                JOptionPane.showMessageDialog(
-                    mainPanel,
-                    "Пожалуйста, введите задание.",
-                    "Ошибка",
-                    JOptionPane.ERROR_MESSAGE
-                )
+                JOptionPane.showMessageDialog(mainPanel, "Пожалуйста, введите задание.", "Ошибка", JOptionPane.ERROR_MESSAGE)
                 return
             }
             appendToChat("Вы: $userTask")
-            appendToChat("Анализ узлов проекта идет...")
+            appendToChat("Анализ PSI-дерева проекта идет...")
 
-            // Шаг 1: Собираем дерево проекта и отправляем задание в OpenAiContextFilter
-            val projectTree = buildProjectTree(project)
+            // Шаг 1: Собираем PSI-дерево проекта, ограничиваем длину контекста
+            val fullProjectTree = buildProjectTree(project)
+            val maxContextLength = 250000
+            val projectTree = if (fullProjectTree.length > maxContextLength)
+                fullProjectTree.substring(0, maxContextLength)
+            else
+                fullProjectTree
             println("Полное PSI-дерево проекта:\n$projectTree")
-            val props = loadOpenAiProperties()
+
+            val props = loadApiProperties()
             if (props == null) {
                 appendToChat("Не удалось загрузить openai.properties из ресурсов.")
                 return
@@ -196,25 +170,33 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 codeNodesResponse.nodes.forEach { node ->
                     appendToChat("Файл: ${node.file}, ${node.nodeType}: ${node.name} (${node.description})")
                 }
-                // Шаг 2: Извлекаем содержимое каждого узла для формирования контекста доработки
+                // Шаг 2: Формируем контекст доработки из PSI-элементов
                 val nodesContextBuilder = StringBuilder()
                 codeNodesResponse.nodes.forEach { node ->
-                    val nodeContent = extractNodeContent(project, node.file, node.name, node.nodeType)
-                    nodesContextBuilder.append("File: ${node.file}\n")
-                    nodesContextBuilder.append("${node.nodeType}: ${node.name}\n")
-                    nodesContextBuilder.append("Content:\n$nodeContent\n")
-                    nodesContextBuilder.append("-----\n")
+                    if (nodesContextBuilder.length >= maxContextLength) return@forEach
+                    val psiManager = PsiManager.getInstance(project)
+                    val virtualFile = LocalFileSystem.getInstance().findFileByPath(node.file)
+                    val psiFile = if (virtualFile != null) psiManager.findFile(virtualFile) else null
+                    if (psiFile != null) {
+                        val expectedSignature = "${node.nodeType.toLowerCase()} ${node.name}"
+                        val targetElement = psiFile.children.firstOrNull { extractSignature(it).toLowerCase() == expectedSignature }
+                        if (targetElement != null) {
+                            nodesContextBuilder.append("File: ${node.file}\n")
+                            nodesContextBuilder.append("${node.nodeType}: ${node.name}\n")
+                            nodesContextBuilder.append("Content:\n${targetElement.text}\n")
+                            nodesContextBuilder.append("-----\n")
+                        }
+                    }
                 }
                 val nodesContext = nodesContextBuilder.toString()
-                // Отправляем задание с контекстом узлов в OpenAiCodeGenerator
                 val combinedQuery = "$userTask\n\nИспользуй следующий контекст узлов для доработки кода:"
                 val codeGenerator = OpenAiCodeGenerator(apiKey)
                 appendToChat("Отправляем запрос на доработку кода с учетом узлов...")
                 val multiResponse = codeGenerator.generateCodeResponse(combinedQuery, nodesContext)
-                // Обновляем файлы согласно полученным изменениям
+                // Обрабатываем каждое изменение согласно update_mode
                 multiResponse.files.forEach { fileChange ->
                     appendToChat("Изменения для файла ${fileChange.file_name}: ${fileChange.user_message}")
-                    createOrUpdateFile(project, fileChange.file_name, fileChange.code)
+                    createOrUpdateFile(project, fileChange)
                     appendToChat("Файл '${fileChange.file_name}' успешно обновлён.")
                     addFileButton(project, fileChange.file_name)
                 }
@@ -224,7 +206,6 @@ class ChatToolWindowFactory : ToolWindowFactory {
             inputField.text = ""
         }
 
-        // Привязываем действие кнопки "Сгенерировать" к объединенной функции
         generateButton.addActionListener { generateAndUpdateNodes() }
         inputField.addKeyListener(object : java.awt.event.KeyAdapter() {
             override fun keyReleased(e: java.awt.event.KeyEvent?) {
@@ -242,7 +223,7 @@ class ChatToolWindowFactory : ToolWindowFactory {
     /**
      * Загружает настройки из файла openai.properties, расположенного в resources.
      */
-    private fun loadOpenAiProperties(): Properties? {
+    private fun loadApiProperties(): Properties? {
         val props = Properties()
         val inputStream = this::class.java.classLoader.getResourceAsStream("openai.properties") ?: return null
         props.load(inputStream)
@@ -250,40 +231,82 @@ class ChatToolWindowFactory : ToolWindowFactory {
     }
 
     /**
-     * Создает или обновляет Python-файл с заданным именем и содержимым кода через PSI.
+     * Создает или обновляет Python-файл с изменениями, полученными от нейросети.
+     * Обновление происходит в зависимости от update_mode:
+     * - "update_file": полная замена содержимого файла.
+     * - "update_element": поиск PSI-элемента по сигнатуре и его замена.
+     * - "create_element": поиск родительского элемента по parent_signature и добавление нового элемента.
      */
-    private fun createOrUpdateFile(project: Project, fileName: String, code: String) {
+    private fun createOrUpdateFile(project: Project, fileChange: FileChange) {
         WriteCommandAction.runWriteCommandAction(project) {
             val psiManager = PsiManager.getInstance(project)
-            // Пытаемся найти файл по абсолютному пути рекурсивно начиная от project.baseDir
-            val existingVirtualFile = findVirtualFileByAbsolutePath(project.baseDir, fileName)
+            val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
+            val targetFileName = if (fileChange.target_file.isNullOrBlank()) fileChange.file_name else fileChange.target_file
+            val existingVirtualFile = findVirtualFileByAbsolutePath(project.baseDir, targetFileName)
             if (existingVirtualFile != null) {
                 val psiFile = psiManager.findFile(existingVirtualFile)
                 if (psiFile != null) {
-                    val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
-                    if (document != null) {
-                        document.setText(code)
-                        PsiDocumentManager.getInstance(project).commitDocument(document)
+                    when (fileChange.update_mode?.toLowerCase()) {
+                        "update_element" -> {
+                            val tempPsiFile = PsiFileFactory.getInstance(project)
+                                .createFileFromText("temp.py", pythonLanguage, fileChange.code)
+                            val newElement = tempPsiFile.firstChild ?: return@runWriteCommandAction
+                            val newSignature = extractSignature(newElement)
+                            val targetElement = psiFile.children.firstOrNull { extractSignature(it) == newSignature }
+                            if (targetElement != null) {
+                                targetElement.replace(newElement)
+                            } else if (!fileChange.parent_signature.isNullOrBlank()) {
+                                val parentElement = psiFile.children.firstOrNull { extractSignature(it) == fileChange.parent_signature }
+                                if (parentElement != null) {
+                                    parentElement.add(newElement)
+                                } else {
+                                    psiFile.viewProvider.document?.setText(psiFile.text + "\n" + fileChange.code)
+                                }
+                            } else {
+                                psiFile.viewProvider.document?.setText(fileChange.code)
+                            }
+                        }
+                        "create_element" -> {
+                            val tempPsiFile = PsiFileFactory.getInstance(project)
+                                .createFileFromText("temp.py", pythonLanguage, fileChange.code)
+                            val newElement = tempPsiFile.firstChild ?: return@runWriteCommandAction
+                            if (!fileChange.parent_signature.isNullOrBlank()) {
+                                val parentElement = psiFile.children.firstOrNull { extractSignature(it) == fileChange.parent_signature }
+                                if (parentElement != null) {
+                                    parentElement.add(newElement)
+                                } else {
+                                    psiFile.viewProvider.document?.setText(psiFile.text + "\n" + fileChange.code)
+                                }
+                            } else {
+                                psiFile.viewProvider.document?.setText(psiFile.text + "\n" + fileChange.code)
+                            }
+                        }
+                        else -> {
+                            // "update_file" или update_mode не указан – полная замена файла
+                            psiFile.viewProvider.document?.setText(fileChange.code)
+                        }
                     }
+                    PsiDocumentManager.getInstance(project).commitDocument(psiFile.viewProvider.document)
                 }
             } else {
-                // Если файл не найден, пытаемся создать его.
-                // Если fileName начинается с базового пути, извлекаем относительный путь.
                 val basePath = project.baseDir.path
-                val relativePath =
-                    if (fileName.startsWith(basePath)) fileName.substring(basePath.length + 1) else fileName
-                // Если относительный путь содержит поддиректории, можно добавить их создание.
+                val relativePath = if (targetFileName.startsWith(basePath)) targetFileName.substring(basePath.length + 1) else targetFileName
                 val psiDirectory = PsiManager.getInstance(project).findDirectory(project.baseDir)
                     ?: return@runWriteCommandAction
-                val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
-                val psiFile = PsiFileFactory.getInstance(project)
-                    .createFileFromText(relativePath, pythonLanguage, code)
-                psiDirectory.add(psiFile)
+                val existingFile = psiDirectory.findFile(relativePath)
+                if (existingFile != null) {
+                    existingFile.viewProvider.document?.setText(fileChange.code)
+                    PsiDocumentManager.getInstance(project).commitDocument(existingFile.viewProvider.document)
+                } else {
+                    val psiFile = PsiFileFactory.getInstance(project)
+                        .createFileFromText(relativePath, pythonLanguage, fileChange.code)
+                    psiDirectory.add(psiFile)
+                }
             }
         }
     }
 
-    // Рекурсивная функция для поиска виртуального файла по абсолютному пути, начиная с данной директории
+    // Рекурсивная функция для поиска виртуального файла по абсолютному пути, начиная с указанной директории
     private fun findVirtualFileByAbsolutePath(directory: VirtualFile, targetPath: String): VirtualFile? {
         for (child in directory.children) {
             if (child.isDirectory) {
