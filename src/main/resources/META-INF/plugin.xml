@@ -25,7 +25,7 @@
     <!-- Extension points defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="ChatWindow"
+        <toolWindow id="MaxPilot"
                     anchor="right"
                     factoryClass="com.example.plugin.ChatToolWindowFactory"
                     secondary="true"
