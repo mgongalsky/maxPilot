@@ -18,6 +18,10 @@ import java.awt.FlowLayout
 import java.util.Properties
 import javax.swing.*
 
+// Switch verbose output by toggling these constants:
+const val VERBOSE_LEVEL_1 = true
+const val VERBOSE_LEVEL_2 = false
+
 // Топ-левел функция для извлечения сигнатуры PSI-элемента
 fun extractSignature(element: PsiElement): String {
     val text = element.text.trim()
@@ -25,7 +29,6 @@ fun extractSignature(element: PsiElement): String {
 }
 
 class ChatToolWindowFactory : ToolWindowFactory {
-
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         // Панель для истории диалога и панель для файлов
         val chatArea = JTextArea().apply {
@@ -142,6 +145,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             appendToChat("Вы: $userTask")
+
+            // Verbose level 1: Начало процесса генерации на основе введённого задания
+            if (VERBOSE_LEVEL_1) {
+                println("Level 1: Starting code generation process for task: '$userTask'")
+                println("Level 1: Gathering PSI tree for project analysis.")
+            }
+
             appendToChat("Анализ PSI-дерева проекта идет...")
 
             // Шаг 1: Собираем PSI-дерево проекта, ограничиваем длину контекста
@@ -151,7 +161,13 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 fullProjectTree.substring(0, maxContextLength)
             else
                 fullProjectTree
-            println("Полное PSI-дерево проекта:\n$projectTree")
+
+            // Verbose level 2: Вывод полного PSI-дерева проекта (по возможности)
+            if (VERBOSE_LEVEL_2) {
+                println("Level 2: Full Project PSI Tree:\n$projectTree")
+            } else if (VERBOSE_LEVEL_1) {
+                println("Level 1: PSI tree gathered; length = ${projectTree.length} characters.")
+            }
 
             val props = loadApiProperties()
             if (props == null) {
@@ -164,8 +180,20 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 return
             }
             val contextFilter = OpenAiContextFilter(apiKey)
+
+            // Verbose level 1: Отправка запроса для фильтрации узлов PSI
+            if (VERBOSE_LEVEL_1) {
+                println("Level 1: Sending context filter request with user task: '$userTask'")
+            }
+
             try {
                 val codeNodesResponse = contextFilter.filterNodes(userTask, projectTree)
+
+                // Verbose level 2: Вывод полного ответа от контекстного фильтра (JSON-представление, если доступно)
+                if (VERBOSE_LEVEL_2) {
+                    println("Level 2: Received code nodes response: $codeNodesResponse")
+                }
+
                 appendToChat("Релевантные узлы для задачи '$userTask':")
                 codeNodesResponse.nodes.forEach { node ->
                     appendToChat("Файл: ${node.file}, ${node.nodeType}: ${node.name} (${node.description})")
@@ -190,9 +218,28 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 }
                 val nodesContext = nodesContextBuilder.toString()
                 val combinedQuery = "$userTask\n\nИспользуй следующий контекст узлов для доработки кода:"
+
+                // Verbose level 1: Вывод информации о формировании запроса для генерации кода
+                if (VERBOSE_LEVEL_1) {
+                    println("Level 1: Preparing code generation request. Combined query:")
+                    println("Level 1: $combinedQuery")
+                }
+                // Verbose level 2: Вывод полного контекста, который передаётся для генерации
+                if (VERBOSE_LEVEL_2) {
+                    println("Level 2: Nodes context sent for code generation:\n$nodesContext")
+                }
+
                 val codeGenerator = OpenAiCodeGenerator(apiKey)
                 appendToChat("Отправляем запрос на доработку кода с учетом узлов...")
                 val multiResponse = codeGenerator.generateCodeResponse(combinedQuery, nodesContext)
+
+                // Verbose level 2: Вывод полного JSON-ответа от генератора кода.
+                if (VERBOSE_LEVEL_2) {
+                    println("Level 2: Received code generation response: $multiResponse")
+                } else if (VERBOSE_LEVEL_1) {
+                    println("Level 1: Code generation response received.")
+                }
+
                 // Обрабатываем каждое изменение согласно update_mode
                 multiResponse.files.forEach { fileChange ->
                     appendToChat("Изменения для файла ${fileChange.file_name}: ${fileChange.user_message}")
@@ -202,6 +249,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 }
             } catch (e: Exception) {
                 appendToChat("Ошибка в процессе обновления узлов: ${e.message}")
+                if (VERBOSE_LEVEL_1) {
+                    println("Level 1: Exception during generation process: ${e.message}")
+                }
             }
             inputField.text = ""
         }
@@ -238,6 +288,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
      * - "create_element": поиск родительского элемента по parent_signature и добавление нового элемента.
      */
     private fun createOrUpdateFile(project: Project, fileChange: FileChange) {
+        if (VERBOSE_LEVEL_1) {
+            println("Level 1: Processing file update for target file: ${fileChange.file_name}")
+        }
         WriteCommandAction.runWriteCommandAction(project) {
             val psiManager = PsiManager.getInstance(project)
             val pythonLanguage = Language.findLanguageByID("Python") ?: return@runWriteCommandAction
@@ -248,6 +301,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
                 if (psiFile != null) {
                     when (fileChange.update_mode?.toLowerCase()) {
                         "update_element" -> {
+                            if (VERBOSE_LEVEL_1) {
+                                println("Level 1: Update mode: update_element")
+                            }
                             val tempPsiFile = PsiFileFactory.getInstance(project)
                                 .createFileFromText("temp.py", pythonLanguage, fileChange.code)
                             val newElement = tempPsiFile.firstChild ?: return@runWriteCommandAction
@@ -255,10 +311,16 @@ class ChatToolWindowFactory : ToolWindowFactory {
                             val targetElement = psiFile.children.firstOrNull { extractSignature(it) == newSignature }
                             if (targetElement != null) {
                                 targetElement.replace(newElement)
+                                if (VERBOSE_LEVEL_1) {
+                                    println("Level 1: Replaced element with signature: $newSignature")
+                                }
                             } else if (!fileChange.parent_signature.isNullOrBlank()) {
                                 val parentElement = psiFile.children.firstOrNull { extractSignature(it) == fileChange.parent_signature }
                                 if (parentElement != null) {
                                     parentElement.add(newElement)
+                                    if (VERBOSE_LEVEL_1) {
+                                        println("Level 1: Added element to parent with signature: ${fileChange.parent_signature}")
+                                    }
                                 } else {
                                     psiFile.viewProvider.document?.setText(psiFile.text + "\n" + fileChange.code)
                                 }
@@ -267,6 +329,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
                             }
                         }
                         "create_element" -> {
+                            if (VERBOSE_LEVEL_1) {
+                                println("Level 1: Update mode: create_element")
+                            }
                             val tempPsiFile = PsiFileFactory.getInstance(project)
                                 .createFileFromText("temp.py", pythonLanguage, fileChange.code)
                             val newElement = tempPsiFile.firstChild ?: return@runWriteCommandAction
@@ -274,6 +339,9 @@ class ChatToolWindowFactory : ToolWindowFactory {
                                 val parentElement = psiFile.children.firstOrNull { extractSignature(it) == fileChange.parent_signature }
                                 if (parentElement != null) {
                                     parentElement.add(newElement)
+                                    if (VERBOSE_LEVEL_1) {
+                                        println("Level 1: Created element under parent with signature: ${fileChange.parent_signature}")
+                                    }
                                 } else {
                                     psiFile.viewProvider.document?.setText(psiFile.text + "\n" + fileChange.code)
                                 }
@@ -283,12 +351,18 @@ class ChatToolWindowFactory : ToolWindowFactory {
                         }
                         else -> {
                             // "update_file" или update_mode не указан – полная замена файла
+                            if (VERBOSE_LEVEL_1) {
+                                println("Level 1: Update mode: update_file (full file replacement)")
+                            }
                             psiFile.viewProvider.document?.setText(fileChange.code)
                         }
                     }
                     PsiDocumentManager.getInstance(project).commitDocument(psiFile.viewProvider.document)
                 }
             } else {
+                if (VERBOSE_LEVEL_1) {
+                    println("Level 1: File not found. Creating new file: $targetFileName")
+                }
                 val basePath = project.baseDir.path
                 val relativePath = if (targetFileName.startsWith(basePath)) targetFileName.substring(basePath.length + 1) else targetFileName
                 val psiDirectory = PsiManager.getInstance(project).findDirectory(project.baseDir)
@@ -318,4 +392,5 @@ class ChatToolWindowFactory : ToolWindowFactory {
         }
         return null
     }
+
 }
