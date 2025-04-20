@@ -37,12 +37,11 @@ fun loadApiKey(): String {
     return properties.getProperty("api.key") ?: throw Exception("Свойство api.key не найдено в openai.properties")
 }
 
-// Класс для генерации MultiCodeResponse по пользовательскому запросу с возможностью передачи контекста
+// Класс для генерации MultiCodeResponse по запросу
 class OpenAiCodeGenerator(private val apiKey: String) {
     private val client: HttpClient = HttpClient.newBuilder().build()
 
-    // Обновленная JSON-схема для ответа.
-    // Дополнительные поля (update_mode, parent_signature, target_file) являются опциональными.
+    // JSON-схема для проверки формата ответа
     private val schema = """
     {
       "type": "object",
@@ -73,12 +72,9 @@ class OpenAiCodeGenerator(private val apiKey: String) {
 
     /**
      * Генерирует объект MultiCodeResponse по данному запросу.
-     * @param userQuery Текст запроса от пользователя.
-     * @param context Дополнительный контекст (например, содержимое текущего файла), может быть null.
-     * @return MultiCodeResponse, содержащий список изменений для файлов.
      */
     fun generateCodeResponse(userQuery: String, context: String? = null): MultiCodeResponse {
-        // Формируем массив сообщений
+        // 1) строим messages
         val messagesArray = buildJsonArray {
             add(buildJsonObject {
                 put("role", "system")
@@ -90,7 +86,8 @@ class OpenAiCodeGenerator(private val apiKey: String) {
                         "чтобы указать, обновлять ли отдельный PSI-элемент, создавать новый элемент или обновлять весь файл. " +
                         "Не меняй file_name без необходимости. Если требуется создать новый файл, используй новое file_name, но это поле обязательно не должно быть пустым. " +
                         "Пиши описание в коде ко всем функциям в виде комментариев, чтобы IDE могла их использовать. " +
-                        "В начале каждого файла также пиши краткое описание файла внутрикодовыми комментариями.")
+                        "В начале каждого файла также пиши краткое описание файла внутрикодовыми комментариями." +
+                        "Не используй патчи и диффы, давай сразу полноценные куски на уровне элементов PSI")
             })
             context?.let {
                 add(buildJsonObject {
@@ -104,9 +101,10 @@ class OpenAiCodeGenerator(private val apiKey: String) {
             })
         }
 
-        // Формируем пейлоад запроса
+        // 2) пейлоад
         val payload = buildJsonObject {
-            put("model", "gpt-4o-2024-08-06")
+            //put("model", "o4-mini")
+            put("model", "o3-mini")
             put("input", messagesArray)
             put("text", buildJsonObject {
                 put("format", buildJsonObject {
@@ -117,12 +115,10 @@ class OpenAiCodeGenerator(private val apiKey: String) {
                 })
             })
         }
-
-        // Сериализуем пейлоад в JSON-строку
         val jsonPayload = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), payload)
         println("Request payload:\n$jsonPayload")
 
-        // Создаем HTTP POST-запрос к Responses API
+        // 3) запрос
         val request = HttpRequest.newBuilder()
             .uri(URI.create("https://api.openai.com/v1/responses"))
             .header("Authorization", "Bearer $apiKey")
@@ -130,40 +126,48 @@ class OpenAiCodeGenerator(private val apiKey: String) {
             .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
             .build()
 
-        // Отправляем запрос и получаем ответ
         val httpResponse = client.send(request, HttpResponse.BodyHandlers.ofString())
         println("HTTP response code: ${httpResponse.statusCode()}")
         if (httpResponse.statusCode() != 200) {
             throw Exception("Ошибка: ${httpResponse.statusCode()} ${httpResponse.body()}")
         }
 
-        // Разбираем JSON-ответ
+        // 4) парсим ответ
         val responseJson = Json.parseToJsonElement(httpResponse.body()).jsonObject
         println("Response JSON:\n$responseJson")
 
-        // Извлекаем outputText: сначала пробуем output_text, если нет – ищем в массиве output -> content -> text
+        // 5) извлечение текста с JSON из блока output[type=message]
         val outputText = responseJson["output_text"]?.jsonPrimitive?.content ?: run {
-            val outputArray = responseJson["output"]?.jsonArray ?: throw Exception("Ответ не содержит output массива")
-            if (outputArray.isEmpty()) throw Exception("Output массив пуст")
-            val firstOutput = outputArray[0].jsonObject
-            val contentArray = firstOutput["content"]?.jsonArray ?: throw Exception("Поле content отсутствует в output")
-            if (contentArray.isEmpty()) throw Exception("Content массив пуст")
-            contentArray[0].jsonObject["text"]?.jsonPrimitive?.content
-                ?: throw Exception("Поле text отсутствует в content")
+            // находим элемент output с type="message"
+            val outputArray = responseJson["output"]?.jsonArray
+                ?: throw Exception("Ответ не содержит output массива")
+            // ищем самый релевантный message
+            val messageObj = outputArray
+                .firstOrNull { elem ->
+                    elem.jsonObject["type"]?.jsonPrimitive?.content == "message"
+                }
+                ?.jsonObject
+                ?: throw Exception("В output нет элемента с type=\"message\"")
+            // извлекаем content -> text
+            val contentArr = messageObj["content"]?.jsonArray
+                ?: throw Exception("Поле content отсутствует в элементе output[type=message]")
+            if (contentArr.isEmpty()) throw Exception("Content массив пуст")
+            val textField = contentArr[0].jsonObject["text"]?.jsonPrimitive?.content
+                ?: throw Exception("В content отсутствует поле text")
+            textField
         }
 
         println("Output text:\n$outputText")
+
+        // 6) десериализуем его в MultiCodeResponse
         return Json.decodeFromString(outputText)
     }
 }
 
-// Точка входа: если файл запущен напрямую, выполняется блок main
+// Точка входа
 fun main() {
-    val defaultQuery = if (System.getenv("USER_QUERY").isNullOrEmpty()) {
-        "Обнови код змейки: добавь возможность съедать яблоки и увеличивать длину змейки"
-    } else {
-        System.getenv("USER_QUERY")
-    }
+    val defaultQuery = System.getenv("USER_QUERY").takeUnless { it.isNullOrEmpty() }
+        ?: "Давай напишем игру арканоид"
     val apiKey = loadApiKey()
     val generator = OpenAiCodeGenerator(apiKey)
     val multiResponse = generator.generateCodeResponse(defaultQuery)
@@ -173,7 +177,6 @@ fun main() {
         println("Description: ${fileChange.description}")
         println("User Message: ${fileChange.user_message}")
         println("Code:\n${fileChange.code}\n")
-        // Дополнительно можно вывести update_mode, parent_signature и target_file, если они заданы
         fileChange.update_mode?.let { println("Update Mode: $it") }
         fileChange.parent_signature?.let { println("Parent Signature: $it") }
         fileChange.target_file?.let { println("Target File: $it") }
